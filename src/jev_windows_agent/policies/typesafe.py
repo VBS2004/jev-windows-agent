@@ -87,15 +87,30 @@ class TypeSafeJevPolicy:
         max_candidates: int = 240,
         client: httpx.Client | None = None,
     ) -> None:
-        self.api_key = api_key or os.environ.get("TYPESAFE_API_KEY")
+        env_typesafe_key = os.environ.get("TYPESAFE_API_KEY")
+        # An OpenRouter key pasted into TYPESAFE_API_KEY by mistake is unmistakable --
+        # OpenRouter's own key shape -- and api.typesafe.ai will only ever answer it
+        # with a 401. Treat it as absent rather than let it silently shadow
+        # OPENROUTER_API_KEY (this only applies to the environment-derived key, never
+        # to an explicit api_key= the caller passed in).
+        misplaced_openrouter_key = (
+            api_key is None and isinstance(env_typesafe_key, str) and env_typesafe_key.startswith("sk-or-v1-")
+        )
+        self.api_key = api_key or (None if misplaced_openrouter_key else env_typesafe_key)
         default_model = "jev-latest"
-        if not self.api_key and base_url == TYPESAFE_SYSTEM_ONE_URL and os.environ.get("OPENROUTER_API_KEY"):
-            # With only an OpenRouter key configured, route through OpenRouter so
-            # existing TypeSafeJevPolicy() call sites work unchanged. A TypeSafe key,
-            # when present, still takes precedence.
-            self.api_key = os.environ["OPENROUTER_API_KEY"]
-            base_url = OPENROUTER_DECISIONS_URL
-            default_model = OPENROUTER_JEV_MODEL
+        if api_key is None and base_url == TYPESAFE_SYSTEM_ONE_URL and not self.api_key:
+            # With only an OpenRouter key configured -- as OPENROUTER_API_KEY, or as a
+            # misplaced TYPESAFE_API_KEY caught above -- route through OpenRouter so
+            # existing TypeSafeJevPolicy() call sites work unchanged. An explicit
+            # api_key=, or a TYPESAFE_API_KEY that isn't OpenRouter-shaped, still
+            # takes precedence and is never overridden here.
+            openrouter_key = os.environ.get("OPENROUTER_API_KEY") or (
+                env_typesafe_key if misplaced_openrouter_key else None
+            )
+            if openrouter_key:
+                self.api_key = openrouter_key
+                base_url = OPENROUTER_DECISIONS_URL
+                default_model = OPENROUTER_JEV_MODEL
         if not self.api_key:
             raise ValueError("Set TYPESAFE_API_KEY or OPENROUTER_API_KEY, or pass api_key=...")
         self.model = model or os.environ.get("TYPESAFE_MODEL", default_model)

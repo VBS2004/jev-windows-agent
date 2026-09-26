@@ -54,24 +54,69 @@ class WindowsUIABackend:
         self._refs: dict[str, Any] = {}
         self._scroll_point: tuple[float, float] | None = None
         self._own_elevation = _process_elevation(_win32().kernel32.GetCurrentProcessId())
+        # Windows already checked for a cold Chromium tree (see _warm_up_chromium).
+        self._warmed: set[Any] = set()
 
     def register_ref(self, element_id: str, ref: Any) -> None:
         self._refs[element_id] = ref
 
     def observe(self) -> DesktopSnapshot:
         self._require_owner_thread()
+        snapshot = self._observe_settled()
+        hwnd = snapshot.context.get("hwnd")
+        if hwnd not in self._warmed and _is_chromium_stub(hwnd, snapshot):
+            snapshot = self._warm_up_chromium(snapshot)
+        self._warmed.add(hwnd)
+        return snapshot
+
+    def _observe_settled(self) -> DesktopSnapshot:
+        """One observation, retrying the brief moments when there is nothing to observe.
+
+        The foreground window can close or swap mid-walk (a COM error), and during a
+        focus handoff -- Alt-Tab, a window closing, a shell flyout -- Windows briefly
+        reports no foreground window at all. Both are races to wait out; raising
+        would end the whole run, since the runtime does not guard observe().
+        """
         COMError = self._comtypes.COMError
         last_error: Exception | None = None
-        # The foreground window can close or swap mid-walk; that is a race to retry,
-        # not a failure to surface.
-        for _ in range(3):
+        deadline = time.perf_counter() + 1.5
+        while True:
             try:
                 return self._observe_once()
             except COMError as exc:
                 last_error = exc
                 logger.debug("uia observe retry after COM error hresult=%s", _hresult(exc))
-                time.sleep(0.05)
+            except _NoForegroundWindow as exc:
+                last_error = exc
+                logger.debug("uia observe retry: no foreground window")
+            if time.perf_counter() >= deadline:
+                break
+            time.sleep(0.1)
+        if isinstance(last_error, _NoForegroundWindow):
+            raise RuntimeError("No foreground Windows window") from last_error
         raise StaleDesktopState(f"Foreground window kept changing during observation: {last_error}")
+
+    def _warm_up_chromium(self, snapshot: DesktopSnapshot) -> DesktopSnapshot:
+        """Wait for a Chromium/Electron window to publish its real accessibility tree.
+
+        Chromium switches accessibility off after a spell without assistive-tech
+        clients, and the first query after that returns only the window frame --
+        in Spotify, three unnamed buttons (its own minimize/maximize/close) that a
+        policy acting on that snapshot clicked blind. The query itself switches
+        accessibility back on; the tree fills in within a second or so.
+        """
+        hwnd = snapshot.context.get("hwnd")
+        deadline = time.perf_counter() + _CHROMIUM_WARMUP_S
+        while time.perf_counter() < deadline:
+            time.sleep(0.25)
+            fresh = self._observe_settled()
+            if fresh.context.get("hwnd") != hwnd:
+                return fresh  # focus moved on; the new window gets its own check
+            snapshot = fresh
+            if not _is_chromium_stub(hwnd, snapshot):
+                logger.debug("chromium tree warmed up: %d elements", len(snapshot.elements))
+                break
+        return snapshot
 
     def is_fresh(self, snapshot: DesktopSnapshot, action: ExecutableAction) -> bool:
         self._require_owner_thread()
@@ -124,7 +169,7 @@ class WindowsUIABackend:
     def _observe_once(self) -> DesktopSnapshot:
         hwnd, pid = _foreground()
         if not hwnd or not pid:
-            raise RuntimeError("No foreground Windows window")
+            raise _NoForegroundWindow()
         self._require_accessible_process(pid)
 
         window = self._automation.ElementFromHandle(ctypes.c_void_p(hwnd))
@@ -585,11 +630,37 @@ _TOGGLE_STATES = {0: False, 1: True, 2: "indeterminate"}
 _MAX_VALUE_CHARS = 1000
 
 
+class _NoForegroundWindow(Exception):
+    """Windows reported no foreground window; transient during focus handoffs."""
+
+
+_CHROMIUM_CLASS = "Chrome_WidgetWin_1"
+_CHROMIUM_STUB_ELEMENTS = 12
+_CHROMIUM_WARMUP_S = 2.5
+
+
+def _is_chromium_stub(hwnd: Any, snapshot: DesktopSnapshot) -> bool:
+    """A Chromium/Electron window showing only its frame: accessibility not yet on."""
+    if not hwnd or len(snapshot.elements) > _CHROMIUM_STUB_ELEMENTS:
+        return False
+    return _window_class(int(hwnd)) == _CHROMIUM_CLASS
+
+
+def _finite(value: Any) -> bool:
+    return not isinstance(value, float) or math.isfinite(value)
+
+
 def _plain(value: Any) -> Any:
-    """Keep JSON-safe VARIANT payloads; drop COM objects such as the not-supported marker."""
-    if value is None or isinstance(value, (str, bool, int, float)):
+    """Keep JSON-safe VARIANT payloads; drop COM objects such as the not-supported marker.
+
+    NaN and infinity are dropped too: a slider can report them (e.g. progress with
+    nothing loaded), and they are not JSON, so httpx refuses to send the request.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
         return value
-    if isinstance(value, tuple) and all(isinstance(v, (int, float)) for v in value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, tuple) and all(isinstance(v, (int, float)) and _finite(v) for v in value):
         return value
     return None
 
@@ -690,6 +761,20 @@ def _capabilities(
     return tuple(capabilities)
 
 
+def _identifiable(name: str, value: Any, props: Mapping[str, Any]) -> bool:
+    """Whether anything about a control says what it is: a name, text, id, or tooltip.
+
+    A number or toggle state is not identity: a slider at 0.0 could be volume or
+    brightness.
+    """
+    return bool(
+        name
+        or (isinstance(value, str) and value)
+        or props.get("automation_id")
+        or props.get("help_text")
+    )
+
+
 def _element_from_props(props: Mapping[str, Any], element_id: str, parent_id: str | None) -> DesktopElement | None:
     role = _role_name(props.get("control_type"))
     patterns = _patterns_from(props)
@@ -735,6 +820,11 @@ def _element_from_props(props: Mapping[str, Any], element_id: str, parent_id: st
         typing=typing,
         has_bounds=bounds is not None,
     )
+    if not _identifiable(name, value, props):
+        # Nothing tells the policy what this control does, so clicking, dragging, or
+        # setting it is a coin flip -- and on a window frame the coin lands on Close.
+        # Typing stays: an editable text control's effect is bounded by its role.
+        capabilities = tuple(c for c in capabilities if c == ActionKind.TYPE_TEXT)
 
     semantic = bool(name or value not in (None, "") or capabilities or role in _STRUCTURAL_ROLES)
     if not semantic:

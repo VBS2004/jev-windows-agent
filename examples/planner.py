@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
-from windows_task import load_env_file, run_windowed_subtask
+from windows_task import TargetWindowError, load_env_file, run_windowed_subtask
 
 from jev_windows_agent import TerminalKind
 from jev_windows_agent.models import Subtask
@@ -182,6 +182,13 @@ def describe_step(i: int, total: int, step: dict) -> str:
     return "\n".join(lines)
 
 
+def continue_after(step: int, total: int) -> bool:
+    """After a step that didn't complete: ask whether to go on -- unless it was the last."""
+    if step >= total:
+        return False
+    return confirm(f"Step {step} did not complete. Continue to step {step + 1}/{total} anyway? [y/n]: ") == "y"
+
+
 def confirm(prompt: str) -> str:
     try:
         return input(prompt).strip().lower()
@@ -238,10 +245,18 @@ def main() -> None:
                 launch=step.get("launch"),
                 confidence_gate=args.confidence_gate,
             )
-        except RuntimeError as exc:
-            print(f"\nstep {i} failed before running: {exc}")
-            outcomes.append((step["goal"], f"error: {exc}"))
-            if confirm("Continue to the next step anyway? [y/n]: ") != "y":
+        except TargetWindowError as exc:
+            print(f"\nstep {i} did not start: {exc}")
+            outcomes.append((step["goal"], f"not started: {exc}"))
+            if not continue_after(i, len(steps)):
+                break
+            continue
+        except Exception as exc:  # noqa: BLE001 -- report any mid-run failure, then let the user decide
+            # The run was underway (it may have acted already), so "before running"
+            # would be wrong: say where it stopped and why.
+            print(f"\nstep {i} stopped during the run: {type(exc).__name__}: {exc}")
+            outcomes.append((step["goal"], f"stopped: {type(exc).__name__}: {exc}"))
+            if not continue_after(i, len(steps)):
                 break
             continue
 
@@ -250,9 +265,8 @@ def main() -> None:
             print("reason:", result.reason)
         print()
         outcomes.append((step["goal"], result.status.value))
-        if result.status != TerminalKind.SUBTASK_COMPLETE:
-            if confirm("That step did not complete. Continue to the next step anyway? [y/n]: ") != "y":
-                break
+        if result.status != TerminalKind.SUBTASK_COMPLETE and not continue_after(i, len(steps)):
+            break
 
     print("\n=== Plan summary ===")
     for goal, status in outcomes:

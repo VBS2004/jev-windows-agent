@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import time
+from collections import Counter
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 import httpx
 
+from ..errors import JevProviderError
 from ..models import (
     DEFAULT_HOTKEYS,
     DEFAULT_PRESS_KEYS,
@@ -64,6 +68,21 @@ TYPESAFE_SYSTEM_ONE_URL = "https://api.typesafe.ai/v1/systemone"
 # and typed answers as TypeSafe's own endpoint, authenticated with an OpenRouter key.
 OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 OPENROUTER_JEV_MODEL = "~typesafe/jev-latest"
+
+# docs.typesafe.ai/models: Jev 1.13 takes 64k tokens per request, and 32k for the
+# `state` plus the single longest question. A desktop request sends each element
+# twice -- once in the state, again as a target option -- so a busy screen (a long
+# playlist, an expanded library) runs out long before max_candidates does.
+MAX_REQUEST_TOKENS = 64_000
+MAX_STATE_PLUS_QUESTION_TOKENS = 32_000
+# These requests are dense JSON (hex element ids, short names): the API's own usage
+# counts measured about 2.0 bytes per input token. Estimate at 1.7 and fill each
+# limit to 85%, so a screen that tokenizes worse than average still fits.
+_BYTES_PER_TOKEN_ESTIMATE = 1.7
+_BUDGET_FILL = 0.85
+# Sibling groups larger than this are long lists (tracks, files, playlists), trimmed
+# round-robin before the distinctive controls around them.
+_LONG_LIST_SIZE = 12
 
 TARGET_RULES = """Choose the best currently observed target for this operation.
 Choose only an offered id. Respect current values, state, constraints, and recent actions.
@@ -143,25 +162,21 @@ class TypeSafeJevPolicy:
         snapshot: DesktopSnapshot,
         history: Sequence[ActionRecord],
     ) -> Decision:
-        questions, candidate_maps, meta = self._build_questions(subtask, snapshot)
-        body = {
-            "model": self.model,
-            "state": {
-                "subtask": subtask.compact(),
-                "desktop": {
-                    "application": snapshot.application,
-                    "window": snapshot.window,
-                    "context": dict(snapshot.context),
-                    "elements": [e.compact() for e in snapshot.elements if e.visible],
-                },
-                "recent_actions": summarize_history(history),
-                "candidate_truncation": meta,
-            },
-            "questions": questions,
-        }
+        body, candidate_maps = self._fitted_request(subtask, snapshot, history)
 
         started = time.perf_counter()
-        result = self._post(body)
+        try:
+            result = self._post(body)
+        except JevProviderError as exc:
+            if not exc.context_exceeded:
+                raise
+            # The size estimate was optimistic for this screen. The provider has now
+            # measured the real request, so cut relative to what was actually sent --
+            # halving a budget the request was already under would resend it unchanged.
+            sent = len(body["state"]["desktop"]["elements"])
+            logger.warning("JEV context exceeded with %d elements; retrying with at most %d", sent, sent // 2)
+            body, candidate_maps = self._fitted_request(subtask, snapshot, history, max_elements=sent // 2)
+            result = self._post(body)
         latency_ms = round((time.perf_counter() - started) * 1000)
         answers = result.get("answers", {})
 
@@ -224,6 +239,83 @@ class TypeSafeJevPolicy:
             raw=result,
             **kwargs,
         )
+
+    def _request(
+        self,
+        subtask: Subtask,
+        snapshot: DesktopSnapshot,
+        history: Sequence[ActionRecord],
+        elements: Sequence[DesktopElement],
+        omitted: int = 0,
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+        """One request body over the given visible elements, plus its candidate maps."""
+        shown = replace(snapshot, elements=tuple(elements))
+        questions, candidate_maps, meta = self._build_questions(subtask, shown)
+        if omitted:
+            # Tell the model the screen was cut, so "not visible here" is not read as
+            # "does not exist": it can scroll, or hand back instead of guessing.
+            meta = {**meta, "elements_omitted_for_context_budget": omitted}
+        body = {
+            "model": self.model,
+            "state": {
+                "subtask": subtask.compact(),
+                "desktop": {
+                    "application": snapshot.application,
+                    "window": snapshot.window,
+                    "context": dict(snapshot.context),
+                    "elements": [e.compact() for e in elements],
+                },
+                "recent_actions": summarize_history(history),
+                "candidate_truncation": meta,
+            },
+            "questions": questions,
+        }
+        return body, candidate_maps
+
+    def _fitted_request(
+        self,
+        subtask: Subtask,
+        snapshot: DesktopSnapshot,
+        history: Sequence[ActionRecord],
+        *,
+        max_elements: int | None = None,
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+        """The full request if it fits Jev's context; otherwise the most useful subset.
+
+        A screen that fits is sent unchanged. An oversized one keeps the largest
+        prefix of elements, in _trim_order, that fits -- found by binary search, since
+        each candidate size needs a real build of the questions to measure.
+        `max_elements` caps the count regardless of the estimate, for retrying after
+        the provider itself reported the context exceeded.
+        """
+        visible = [e for e in snapshot.elements if e.visible]
+        if max_elements is None:
+            full = self._request(subtask, snapshot, history, visible)
+            if _request_fits(full[0]):
+                return full
+        limit = len(visible) if max_elements is None else min(len(visible), max_elements)
+
+        order = _trim_order(visible)
+        best: tuple[dict[str, Any], dict[str, dict[str, Any]]] | None = None
+        best_count = 0
+        low, high = 0, limit
+        while low <= high:
+            count = (low + high) // 2
+            kept_positions = sorted(order[:count])
+            request = self._request(
+                subtask, snapshot, history, [visible[i] for i in kept_positions], omitted=len(visible) - count
+            )
+            if _request_fits(request[0]):
+                best, best_count = request, count
+                low = count + 1
+            else:
+                high = count - 1
+        if best is None:
+            best = self._request(subtask, snapshot, history, [], omitted=len(visible))
+        logger.warning(
+            "JEV request trimmed to fit context: kept %d of %d visible elements", best_count, len(visible)
+        )
+        return best
 
     def _build_questions(
         self,
@@ -389,10 +481,58 @@ class TypeSafeJevPolicy:
                 time.sleep(0.5 * (2**attempt))
                 continue
             if response.is_error:
-                logger.warning("JEV error status=%d", response.status_code)
-                raise RuntimeError(f"JEV provider returned HTTP {response.status_code}; no action executed")
+                detail = response.text[:300].replace(self.api_key, "<redacted>") or response.reason_phrase
+                logger.warning("JEV error status=%d detail=%s", response.status_code, detail)
+                raise JevProviderError(response.status_code, detail)
             return response.json()
         raise RuntimeError("JEV provider unavailable")
+
+
+def _json_size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _request_fits(body: Mapping[str, Any]) -> bool:
+    """Estimate both documented limits: state + longest question, and the whole request."""
+    state = _json_size(body["state"])
+    sizes = [_json_size(question) for question in body["questions"].values()]
+    budget = _BUDGET_FILL * _BYTES_PER_TOKEN_ESTIMATE
+    return (
+        state + max(sizes, default=0) <= MAX_STATE_PLUS_QUESTION_TOKENS * budget
+        and state + sum(sizes) <= MAX_REQUEST_TOKENS * budget
+    )
+
+
+def _context_priority(element: DesktopElement) -> int:
+    """Lower survives trimming longer. Current state first, anonymous structure last."""
+    if element.focused or element.selected or element.expanded or element.value not in (None, ""):
+        return 0  # what the screen currently says: focus, selection, entered values
+    if element.actions and element.name:
+        return 1  # named things the policy can act on
+    if element.name:
+        return 2  # labels and headings that give those actions their meaning
+    if element.actions:
+        return 3  # unnamed controls: actionable, but hard for the policy to judge
+    return 4  # anonymous structure
+
+
+def _trim_order(elements: Sequence[DesktopElement]) -> list[int]:
+    """Positions in the order they should be kept when a screen must be cut.
+
+    By priority first. Within a priority, long lists give up their items round-robin
+    -- every list's first item before any list's second -- so trimming thins out a
+    playlist or a file view instead of dropping whatever happens to come last in the
+    tree (in Spotify, the play/pause bar).
+    """
+    siblings = Counter(element.parent_id for element in elements)
+    seen: Counter[str | None] = Counter()
+    keys = []
+    for position, element in enumerate(elements):
+        rank_in_list = seen[element.parent_id]
+        seen[element.parent_id] += 1
+        list_rank = rank_in_list if siblings[element.parent_id] > _LONG_LIST_SIZE else 0
+        keys.append((_context_priority(element), list_rank, position))
+    return [key[2] for key in sorted(keys)]
 
 
 def _validate_choice(answer: Mapping[str, Any], ids: set[str]) -> Mapping[str, Any]:

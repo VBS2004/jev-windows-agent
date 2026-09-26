@@ -19,7 +19,7 @@ from jev_windows_agent import ActionKind
 from jev_windows_agent.backends import windows_uia as w
 from jev_windows_agent.errors import UnsupportedDesktopAction
 from jev_windows_agent.keyboard import KEY_NAMES
-from jev_windows_agent.models import Bounds
+from jev_windows_agent.models import Bounds, DesktopElement, DesktopSnapshot
 
 BUTTON, EDIT, DOCUMENT, LIST_ITEM, PANE, GROUP, TEXT, CHECKBOX, SLIDER, MENU_ITEM = (
     50000, 50004, 50030, 50007, 50033, 50026, 50020, 50002, 50015, 50011,
@@ -126,7 +126,7 @@ def test_documents_are_typed_with_keystrokes() -> None:
 
 def test_documents_without_keyboard_typing_keep_set_value() -> None:
     # Without keyboard focus there is no typing path, so the value pattern is the edit.
-    p = props(control_type=DOCUMENT, is_keyboard_focusable=False, **writable_value())
+    p = props(control_type=DOCUMENT, name="Notes", is_keyboard_focusable=False, **writable_value())
     assert w._typing_method(p) == "value"
     e = w._element_from_props(p, "doc", None)
     assert e.actions == (ActionKind.TYPE_TEXT, ActionKind.SET_VALUE)
@@ -193,7 +193,8 @@ def test_legacy_name_is_a_fallback_only() -> None:
     assert element(has_legacy_iaccessible=True, legacy_iaccessible_name="Legacy").name == "Legacy"
     named = element(name="Primary", has_legacy_iaccessible=True, legacy_iaccessible_name="Legacy")
     assert named.name == "Primary"
-    assert element(legacy_iaccessible_name="Ignored", has_invoke=True).name == ""
+    # (An automation id keeps this unnamed button identifiable, so it survives.)
+    assert element(legacy_iaccessible_name="Ignored", has_invoke=True, automation_id="btn").name == ""
 
 
 def test_range_values() -> None:
@@ -229,6 +230,95 @@ def test_role_names() -> None:
     assert w._role_name(59999) == "ControlType59999"
     assert w._role_name(None) == "Unknown"
     assert w._role_name(True) == "Unknown"
+
+
+# -- anonymous controls ------------------------------------------------------------------
+
+
+def test_an_anonymous_button_is_not_offered_at_all() -> None:
+    # Live: Spotify's cold Chromium tree was three unnamed buttons -- its own window
+    # controls -- and the policy clicked two of them blind.
+    assert element(has_invoke=True) is None
+
+
+@pytest.mark.parametrize("identity", [{"name": "Close"}, {"automation_id": "view_4"}, {"help_text": "Close window"}])
+def test_any_identity_keeps_a_button_clickable(identity: dict) -> None:
+    assert element(has_invoke=True, **identity).actions == (ActionKind.CLICK,)
+
+
+def test_a_number_is_not_identity() -> None:
+    # A slider at 0.0 could be volume or brightness; setting it blind is a guess.
+    slider = element(control_type=SLIDER, has_range_value=True, range_value_is_read_only=False, range_value_value=0.0)
+    assert slider is not None and slider.actions == ()
+
+
+def test_an_anonymous_text_field_keeps_typing_only() -> None:
+    # Typing into an editable field has an effect bounded by its role; clicking or
+    # setting an unknown control does not.
+    field = element(control_type=EDIT, is_keyboard_focusable=True, **writable_value())
+    assert field.actions == (ActionKind.TYPE_TEXT,)
+
+
+def test_non_finite_numbers_are_dropped() -> None:
+    # httpx refuses to encode NaN/inf, so one bad slider would crash the whole request.
+    assert w._plain(float("nan")) is None
+    assert w._plain(float("inf")) is None
+    assert w._plain(0.5) == 0.5
+    assert w._plain((1.0, float("nan"))) is None
+    assert w._plain((1.0, 2.0)) == (1.0, 2.0)
+
+
+# -- observation robustness -------------------------------------------------------------
+
+
+def bare_backend(observations: list) -> w.WindowsUIABackend:
+    """A backend with no COM behind it, replaying scripted _observe_once outcomes."""
+    import threading
+    from types import SimpleNamespace
+
+    backend = object.__new__(w.WindowsUIABackend)
+    backend._comtypes = SimpleNamespace(COMError=type("COMError", (Exception,), {}))
+    backend._owner_thread = threading.get_ident()
+    backend._warmed = set()
+    outcomes = iter(observations)
+
+    def observe_once():
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    backend._observe_once = observe_once
+    return backend
+
+
+def screen(hwnd: int, count: int) -> DesktopSnapshot:
+    elements = tuple(
+        DesktopElement(id=f"e{i}", role="Button", name=f"b{i}", source="windows_uia") for i in range(count)
+    )
+    return DesktopSnapshot(application="App", window="App", revision=str(count), elements=elements,
+                           context={"hwnd": hwnd})
+
+
+def test_a_moment_with_no_foreground_window_is_waited_out() -> None:
+    # Live: during a focus change observe() raised and would have ended the run.
+    backend = bare_backend([w._NoForegroundWindow(), w._NoForegroundWindow(), screen(1, 30)])
+    assert len(backend._observe_settled().elements) == 30
+
+
+def test_a_cold_chromium_tree_is_waited_on_before_anyone_acts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(w, "_window_class", lambda hwnd: w._CHROMIUM_CLASS)
+    backend = bare_backend([screen(7, 3), screen(7, 3), screen(7, 158)])
+    assert len(backend.observe().elements) == 158
+    # Once warm, later observations of that window are not delayed.
+    backend._observe_once = lambda: screen(7, 3)
+    assert len(backend.observe().elements) == 3
+
+
+def test_small_non_chromium_windows_are_not_delayed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(w, "_window_class", lambda hwnd: "Notepad")
+    backend = bare_backend([screen(3, 4)])
+    assert len(backend.observe().elements) == 4
 
 
 # -- identity & revision -------------------------------------------------------------

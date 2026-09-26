@@ -185,6 +185,22 @@ is set, TypeSafe taking precedence. Retries on 429/503/529 with exponential
 backoff; anything else raises immediately rather than silently swallowing a
 bad decision.
 
+**Requests are fitted to Jev's context length.** Jev 1.13 takes 32k tokens for
+the `state` plus the single longest question, and 64k per request
+(docs.typesafe.ai/models). A desktop request sends each element twice — in the
+state, and again as a target option — so a busy screen (Spotify with the
+library expanded and Liked Songs open) overflowed it and the provider answered
+`400 max_tokens_exceeded`. `_fitted_request` estimates size (measured about 2
+bytes per token; estimated at 1.7, filled to 85%) and sends a screen that fits
+unchanged. An oversized one keeps current state first (focus, selection,
+values), then named controls, labels, unnamed controls, and anonymous structure
+last; long lists give up items round-robin, so trimming thins a playlist
+instead of dropping whatever is last in the tree (Spotify's play bar). The
+state records how many elements were omitted, so "not shown" isn't read as
+"doesn't exist". If the provider still reports the context exceeded, the
+request is retried once with half the elements actually sent. Provider errors
+carry the provider's own detail (`JevProviderError`).
+
 **Confidence is surfaced, and optionally gated** (`runtime.py`,
 `RuntimeConfig.confidence_thresholds`): every Choice answer carries a
 `confidence` (how concentrated the probability distribution was). By default
@@ -286,6 +302,19 @@ apps (Notepad, Settings, Explorer, Chrome) rather than assumed up front:
 - **Per-monitor DPI awareness + virtual-desktop-normalized coordinates**, so
   synthesized clicks land correctly on scaled and multi-monitor setups —
   both silent-miss bugs if skipped.
+- **Anonymous controls get no clicks.** A control with no name, text, automation
+  id, or tooltip tells the policy nothing about what it does. Spotify's cold tree
+  was exactly that — three unnamed buttons, its own window controls — and the
+  policy clicked two blind. Such controls lose click/drag/set-value; typing into
+  an editable text field stays, since its role bounds the effect.
+- **Chromium/Electron warm-up.** Chromium switches accessibility off when idle,
+  and the first query after that sees only the window frame. On first sight of
+  a Chromium window with a tiny tree, `observe()` waits (up to 2.5s) for the
+  real tree before anyone acts on it.
+- **Transient states are waited out, not raised.** Windows briefly reports no
+  foreground window during focus handoffs, and a slider can report NaN; the
+  first would have ended a run from `observe()`, the second made httpx refuse
+  to encode the request.
 
 Known limitation, not yet solved: apps that draw their own UI (canvases,
 video timelines, most Electron content without accessibility forced on)
@@ -311,6 +340,8 @@ deterministic runtime tests.
 | `is_fresh` + `semantic_guard()` | backend `is_fresh()` | Executing a decision against UI state that already changed |
 | Runtime-owned settling (poll until structurally stable) | `runtime.py` | Racing the UI, or the policy having to guess timing |
 | `no_change_limit` consecutive-no-op detection | `runtime.py` | Infinite loops with no structural progress → `BLOCKED` |
+| Context-budget fitting | `policies/typesafe.py` | A busy screen overflowing the model's context and killing the run |
+| No actions on anonymous controls | `windows_uia.py` | Blind clicks on controls nothing identifies (e.g. a window's own Close) |
 | Optional confidence gating | `runtime.py` | Acting on a decision the model itself flagged as unsure |
 | Caller-supplied `verify()` callback | `runtime.py` | JEV being optimistic about `SUBTASK_COMPLETE` when structured state can't establish it |
 | Hotkey allow-list (defaults + subtask-declared) | `keyboard.py` + `validation.py` | An arbitrary/dangerous keyboard shortcut, even from a custom policy |

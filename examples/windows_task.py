@@ -32,6 +32,7 @@ from pathlib import Path
 from jev_windows_agent import (
     SUGGESTED_CONFIDENCE_THRESHOLDS,
     ActionKind,
+    DesktopElement,
     DesktopExecutor,
     DesktopSnapshot,
     ExecutableAction,
@@ -44,6 +45,10 @@ from jev_windows_agent.backends import WindowsUIABackend
 from jev_windows_agent.backends.windows_uia import _revision, activate_window, foreground_window, resolve_window
 from jev_windows_agent.errors import UnsupportedDesktopAction
 from jev_windows_agent.policies import TypeSafeJevPolicy
+
+
+class TargetWindowError(RuntimeError):
+    """The task never started: no single window to run it in, or it wouldn't stay in front."""
 
 
 class WindowScope:
@@ -60,12 +65,14 @@ class WindowScope:
         self.inner = inner
         self.hwnd = hwnd
         self.last_observation_hidden = False
+        self.seen: dict[str, DesktopElement] = {}
 
     def observe(self) -> DesktopSnapshot:
         snapshot = self.inner.observe()
         self.last_observation_hidden = snapshot.context.get("hwnd") != self.hwnd
         if self.last_observation_hidden:
             return replace(snapshot, elements=(), revision=_revision(()))
+        self.seen.update((e.id, e) for e in snapshot.elements)
         return snapshot
 
     def is_fresh(self, snapshot: DesktopSnapshot, action: ExecutableAction) -> bool:
@@ -121,7 +128,7 @@ def run_windowed_subtask(
         # window that already existed, which may hold the user's own document.
         hwnd = resolve_window(process_name=process, title_contains=window, launch=launch)
     except LookupError as exc:
-        raise RuntimeError(f"Target window for process={process!r} window={window!r}: {exc}") from exc
+        raise TargetWindowError(f"Target window for process={process!r} window={window!r}: {exc}") from exc
 
     # Something (often a just-launched window) can take the foreground back while
     # this one settles. Check before JEV starts: a run pinned to a window that isn't
@@ -133,7 +140,7 @@ def run_windowed_subtask(
         if foreground_window() == hwnd:
             break
     else:
-        raise RuntimeError("The target window would not stay in front (another window kept taking focus)")
+        raise TargetWindowError("The target window would not stay in front (another window kept taking focus)")
 
     config = RuntimeConfig(
         timeout_s=180,
@@ -157,6 +164,12 @@ def run_windowed_subtask(
         detail = ""
         if event.record and event.record.target_name:
             detail = f" -> {event.record.target_name!r}"
+        elif action is not None and action.target_id:
+            # No name to show; say what it was rather than print nothing.
+            target = scope.seen.get(action.target_id)
+            automation_id = target.metadata.get("automation_id") if target else None
+            what_it_was = f"{target.role}" + (f" #{automation_id}" if automation_id else "") if target else "element"
+            detail = f" -> (unnamed {what_it_was})"
         elif action is not None and (action.hotkey or action.key or action.scroll_direction):
             detail = f" {action.hotkey or action.key or action.scroll_direction}"
         confidence = "n/a" if decision.confidence is None else f"{decision.confidence:.2f}"

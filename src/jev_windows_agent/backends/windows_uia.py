@@ -1670,7 +1670,7 @@ def resolve_window(
     process_name: str | None = None,
     title_contains: str | None = None,
     launch: str | None = None,
-    timeout_s: float = 10.0,
+    timeout_s: float = 30.0,
 ) -> int:
     """Find the one window a task should run in, launching the app first if asked.
 
@@ -1692,12 +1692,24 @@ def resolve_window(
         import subprocess
 
         # "start" resolves URIs such as ms-settings: as well as executables and arguments.
+        # Bounded: for a packaged/single-instance app (Notepad, Settings) with several
+        # matching windows already open, "start" was observed to block for 40s+ instead
+        # of returning immediately -- Windows' app-activation broker negotiating with an
+        # already-running instance, outside this function's own control. Unbounded, that
+        # hangs the whole call well past `timeout_s` before the polling loop even starts.
         try:
-            subprocess.run(["cmd", "/c", "start", "", launch], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["cmd", "/c", "start", "", launch], check=True, capture_output=True, text=True, timeout=timeout_s
+            )
         except subprocess.CalledProcessError as exc:
             # e.g. a path with a stray trailing ":" copied from a URI like ms-settings:
             reason = (exc.stderr or exc.stdout or "").strip() or f"exit status {exc.returncode}"
             raise LookupError(f"could not launch {launch!r}: {reason}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise LookupError(
+                f"launching {launch!r} did not return within {timeout_s:.0f}s -- Windows may be slow to activate "
+                "it, especially with several matching windows already open"
+            ) from exc
         while time.perf_counter() < deadline:
             picked = _pick_launched_window(before, matching(), foreground_window(), foreground_before)
             if picked is not None:

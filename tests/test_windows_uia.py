@@ -539,6 +539,24 @@ def test_a_failed_launch_is_a_clear_error_not_a_traceback(monkeypatch: pytest.Mo
         w.resolve_window(process_name="spotify", launch="Spotify.exe:")
 
 
+def test_a_launch_that_never_returns_times_out_instead_of_hanging(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Live: "cmd /c start" launching Notepad while several Notepad windows were
+    # already open blocked for 40s+ -- Windows' app-activation broker negotiating
+    # with the running instance -- well past resolve_window's own polling deadline,
+    # which never even started. subprocess.run had no timeout of its own.
+    import subprocess
+
+    def hang(args, **kwargs):
+        assert kwargs.get("timeout") is not None, "the launch subprocess must be bounded"
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    monkeypatch.setattr(w, "find_windows", lambda **kw: [])
+    monkeypatch.setattr(w, "foreground_window", lambda: TERMINAL)
+    with pytest.raises(LookupError, match="did not return within"):
+        w.resolve_window(process_name="notepad", launch="notepad.exe", timeout_s=5)
+
+
 # -- platform boundaries ---------------------------------------------------------------
 
 

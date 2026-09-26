@@ -398,6 +398,13 @@ src/jev_windows_agent/
   policies/
     typesafe.py             JEV via TypeSafe (or OpenRouter)
     scripted.py               deterministic policy for tests/examples
+  runner.py                Windows-only: resolve a window, pin JEV to it, run one
+                            Subtask (run_windowed_subtask) — the shared core behind
+                            windows_task.py, planner.py, and the `jev` CLI
+  planner.py                Windows-only: DeepSeek turns one request into an
+                            ordered list of single-window steps (plan_request)
+  cli.py                    the `jev` console-script entry point — Rich-rendered
+                            `run`/`plan` subcommands over runner.py/planner.py
 
 examples/
   effects_demo.py, typesafe_demo.py     deterministic demos, no API key
@@ -405,7 +412,10 @@ examples/
   test_settings.py, test_spotify.py        macOS end-to-end JEV runs
   windows_uia_probe.py                      Windows perception probe
   windows_notepad_smoke.py                    Windows end-to-end, no API key
-  test_notepad.py, windows_task.py             Windows end-to-end JEV runs
+  test_notepad.py                              Windows end-to-end JEV run
+  windows_task.py, planner.py                   plain-text CLIs; thin wrappers over
+                                                 runner.py/planner.py — the `jev`
+                                                 command is the styled equivalent
 
 docs/
   walkthrough.md                a guided, module-by-module code tour
@@ -415,7 +425,10 @@ docs/
 
 Install extras: `pip install -e '.[macos]'` or `pip install -e '.[windows]'`
 (`comtypes` on Windows, `pyobjc-framework-*` on macOS) — both are optional;
-the core package has no OS-specific dependency.
+the core package has no OS-specific dependency. `runner.py`, `planner.py`, and
+`cli.py` are Windows-only (they import `WindowsUIABackend` directly) and are
+never imported from the package's top level, so importing `jev_windows_agent`
+itself stays platform-independent.
 
 ---
 

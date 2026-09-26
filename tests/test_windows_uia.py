@@ -524,6 +524,21 @@ def test_several_matches_with_none_in_front_is_refused_not_guessed() -> None:
         w._pick_existing_window([7, 8, 9], foreground=TERMINAL)
 
 
+def test_a_failed_launch_is_a_clear_error_not_a_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Live: --launch "...\\Spotify.exe:" (a trailing colon copied from ms-settings:)
+    # surfaced as a raw CalledProcessError traceback.
+    import subprocess
+
+    def fail(args, **kwargs):
+        raise subprocess.CalledProcessError(1, args, output="", stderr="The system cannot find the file")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    monkeypatch.setattr(w, "find_windows", lambda **kw: [])
+    monkeypatch.setattr(w, "foreground_window", lambda: TERMINAL)
+    with pytest.raises(LookupError, match="could not launch 'Spotify.exe:': The system cannot find the file"):
+        w.resolve_window(process_name="spotify", launch="Spotify.exe:")
+
+
 # -- platform boundaries ---------------------------------------------------------------
 
 

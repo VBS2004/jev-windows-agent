@@ -1692,7 +1692,12 @@ def resolve_window(
         import subprocess
 
         # "start" resolves URIs such as ms-settings: as well as executables and arguments.
-        subprocess.run(["cmd", "/c", "start", "", launch], check=True)
+        try:
+            subprocess.run(["cmd", "/c", "start", "", launch], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            # e.g. a path with a stray trailing ":" copied from a URI like ms-settings:
+            reason = (exc.stderr or exc.stdout or "").strip() or f"exit status {exc.returncode}"
+            raise LookupError(f"could not launch {launch!r}: {reason}") from exc
         while time.perf_counter() < deadline:
             picked = _pick_launched_window(before, matching(), foreground_window(), foreground_before)
             if picked is not None:

@@ -78,6 +78,8 @@ Rules:
 - If the request is unsafe, destructive beyond what was asked, or requires
   information you don't have (e.g. real credentials), return {"steps": []} and put
   the reason in a top-level "refusal" string instead.
+- When "constraint", "input", or "shortcut" has nothing to add, use [] or {} for it
+  -- never null. Only "process", "window", and "launch" may be null.
 """
 
 
@@ -117,6 +119,14 @@ def call_deepseek(request: str, *, api_key: str, model: str) -> dict:
 
 
 def parse_steps(plan: dict) -> list[dict]:
+    """Validate DeepSeek's plan and normalize each step's optional fields.
+
+    A JSON schema in a prompt is a request, not a guarantee: a model can (and here,
+    did) write an *explicit* null for an optional field instead of omitting it or
+    using {}/[]. dict.get(key, default) only falls back to default when the key is
+    *absent* -- a present null still comes back as None -- so every optional field
+    is normalized here, once, rather than trusted at each of its several call sites.
+    """
     if plan.get("refusal"):
         sys.exit(f"DeepSeek declined to plan this request: {plan['refusal']}")
     steps = plan.get("steps")
@@ -127,6 +137,11 @@ def parse_steps(plan: dict) -> list[dict]:
             sys.exit(f"Step {i + 1} is missing goal/verify: {json.dumps(step)[:300]}")
         if not (step.get("process") or step.get("window")):
             sys.exit(f"Step {i + 1} names neither a process nor a window: {json.dumps(step)[:300]}")
+        for key, expected in (("constraint", list), ("verify", list), ("input", dict), ("shortcut", dict)):
+            value = step.get(key)
+            if value is not None and not isinstance(value, expected):
+                sys.exit(f"Step {i + 1}'s {key!r} must be a {expected.__name__} or null: {json.dumps(step)[:300]}")
+            step[key] = value if value is not None else expected()
     return steps
 
 
@@ -134,13 +149,13 @@ def describe_step(i: int, total: int, step: dict) -> str:
     target = " / ".join(filter(None, [step.get("process"), step.get("window")]))
     lines = [f"[{i}/{total}] target: {target}" + (f"  (launch: {step['launch']})" if step.get("launch") else "")]
     lines.append(f"      goal: {step['goal']}")
-    for v in step.get("verify", []):
+    for v in step["verify"]:
         lines.append(f"      verify: {v}")
-    for c in step.get("constraint", []):
+    for c in step["constraint"]:
         lines.append(f"      constraint: {c}")
-    if step.get("input"):
+    if step["input"]:
         lines.append(f"      input: {step['input']}")
-    if step.get("shortcut"):
+    if step["shortcut"]:
         lines.append(f"      shortcut: {step['shortcut']}")
     return "\n".join(lines)
 
@@ -187,9 +202,9 @@ def main() -> None:
         subtask = Subtask(
             goal=step["goal"],
             verification=tuple(step["verify"]),
-            constraints=tuple(step.get("constraint", [])),
-            inputs=dict(step.get("input", {})),
-            shortcuts=dict(step.get("shortcut", {})),
+            constraints=tuple(step["constraint"]),
+            inputs=dict(step["input"]),
+            shortcuts=dict(step["shortcut"]),
             max_actions=args.max_actions,
         )
         try:

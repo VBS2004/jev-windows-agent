@@ -1481,11 +1481,11 @@ def _current_bounds(ref: Any) -> Bounds | None:
     return Bounds(x=float(rect.left), y=float(rect.top), width=float(width), height=float(height))
 
 
-def find_window(*, process_name: str | None = None, title_contains: str | None = None) -> int | None:
-    """Return the first visible, uncloaked top-level window matching the filters.
+def find_windows(*, process_name: str | None = None, title_contains: str | None = None) -> list[int]:
+    """Return every visible, uncloaked top-level window matching the filters, topmost first.
 
-    A convenience for examples and tests that need to put a known app in front; the
-    backend itself only ever observes the foreground window.
+    A convenience for examples and planners that need to put a known app in front;
+    the backend itself only ever observes the foreground window.
     """
     from ctypes import wintypes
 
@@ -1514,10 +1514,119 @@ def find_window(*, process_name: str | None = None, title_contains: str | None =
             if stem != wanted_process:
                 return True
         matches.append(hwnd)
-        return False
+        return True
 
     w.user32.EnumWindows(w.enum_proc(visit), 0)
+    return matches
+
+
+def find_window(*, process_name: str | None = None, title_contains: str | None = None) -> int | None:
+    """Return the topmost matching window, or None. See find_windows and resolve_window.
+
+    With several matching windows this is simply the first in z-order, so it is only
+    safe when the filters identify one window. Prefer resolve_window when acting on it.
+    """
+    matches = find_windows(process_name=process_name, title_contains=title_contains)
     return matches[0] if matches else None
+
+
+def foreground_window() -> int | None:
+    """The window currently in front, or None."""
+    return _foreground()[0]
+
+
+def _pick_launched_window(
+    before: set[int],
+    matches: list[int],
+    foreground: int | None,
+    foreground_before: int | None,
+) -> int | None:
+    """While waiting on a launch: the window it opened, or an existing one it brought forward.
+
+    Returns None to keep waiting. A new window beats everything, because matching
+    windows that already existed may belong to the user: launching Notepad while
+    another Notepad window is open must target the new window, never the old one.
+    """
+    fresh = [hwnd for hwnd in matches if hwnd not in before]
+    if fresh:
+        return fresh[0]
+    # Single-instance apps (Settings) reuse their window; the launch shows up as
+    # that window coming to the front.
+    if foreground in matches and foreground != foreground_before:
+        return foreground
+    return None
+
+
+def _pick_existing_window(matches: list[int], foreground: int | None) -> int:
+    """Without a launch to disambiguate: the only match, or the match already in front.
+
+    Several matching windows with none in front is ambiguous, and picking one would
+    be a guess about which of the user's windows to type into. Raise instead.
+    """
+    if not matches:
+        raise LookupError("no visible window matched")
+    if len(matches) == 1:
+        return matches[0]
+    if foreground in matches:
+        return foreground
+    raise LookupError(
+        f"{len(matches)} windows match and none is in front; name part of the intended window's title "
+        "so exactly one matches"
+    )
+
+
+def resolve_window(
+    *,
+    process_name: str | None = None,
+    title_contains: str | None = None,
+    launch: str | None = None,
+    timeout_s: float = 10.0,
+) -> int:
+    """Find the one window a task should run in, launching the app first if asked.
+
+    With `launch`, the target is the window that launch opens (or the existing
+    window a single-instance app brings forward), never an unrelated window that
+    already matched. Without it, exactly one window must match, or the matching
+    window must already be in front. Raises LookupError instead of guessing.
+    """
+    if not (process_name or title_contains):
+        raise ValueError("name the target with process_name= or title_contains=")
+
+    def matching() -> list[int]:
+        return find_windows(process_name=process_name, title_contains=title_contains)
+
+    before = set(matching())
+    foreground_before = foreground_window()
+    deadline = time.perf_counter() + timeout_s
+    if launch:
+        import subprocess
+
+        # "start" resolves URIs such as ms-settings: as well as executables and arguments.
+        subprocess.run(["cmd", "/c", "start", "", launch], check=True)
+        while time.perf_counter() < deadline:
+            picked = _pick_launched_window(before, matching(), foreground_window(), foreground_before)
+            if picked is not None:
+                if picked in before:
+                    # A reused window surfaced first; give a window of the launch's own
+                    # a moment to appear and win, since that is the likelier intent.
+                    settle = time.perf_counter() + 0.75
+                    while time.perf_counter() < settle:
+                        fresh = [hwnd for hwnd in matching() if hwnd not in before]
+                        if fresh:
+                            return fresh[0]
+                        time.sleep(0.1)
+                return picked
+            time.sleep(0.2)
+        # Never fall back to a window that merely existed before: after a launch that
+        # "worked" invisibly, the only match may be the user's own document.
+        raise LookupError(
+            f"launching {launch!r} neither opened a matching window nor brought one to the front "
+            f"within {timeout_s:.0f}s"
+        )
+    # The app may still be starting from an earlier step; wait for it to appear.
+    while not matching() and time.perf_counter() < deadline:
+        time.sleep(0.2)
+    return _pick_existing_window(matching(), foreground_window())
 
 
 def activate_window(hwnd: int, *, timeout_s: float = 3.0) -> bool:

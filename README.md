@@ -260,6 +260,7 @@ The smoke test and JEV example work on a file they create in a temp directory. W
 ### Windows limitations
 
 - Foreground window only, as on macOS. The backend acts on whatever is in front, so avoid using the machine during a run, or scope the backend as `test_notepad.py` does.
+- Picking the window: with `--launch`, a task runs in the window that launch opened (or the window a single-instance app such as Settings brings forward), never in an older window that happens to match. Without `--launch`, exactly one window must match or the matching one must already be in front; with several candidates the run stops rather than guessing, since typing replaces the target's text.
 - A non-elevated process cannot automate an elevated (administrator) window; `observe()` raises `PermissionError`.
 - Hotkeys use US-layout virtual keys. Typed text is layout-independent.
 - `SET_VALUE` follows what UIA reports as writable. In File Explorer that includes file items, where setting the value renames the file; the policy can still only use values the planner supplied.

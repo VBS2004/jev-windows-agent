@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -38,10 +37,11 @@ from jev_windows_agent import (
     ExecutableAction,
     RuntimeConfig,
     Subtask,
+    TerminalKind,
 )
 from jev_windows_agent.api import result_to_dict
 from jev_windows_agent.backends import WindowsUIABackend
-from jev_windows_agent.backends.windows_uia import _revision, activate_window, find_window
+from jev_windows_agent.backends.windows_uia import _revision, activate_window, foreground_window, resolve_window
 from jev_windows_agent.errors import UnsupportedDesktopAction
 from jev_windows_agent.policies import TypeSafeJevPolicy
 
@@ -52,15 +52,19 @@ class WindowScope:
     The backend observes whatever window is in front. This wrapper returns an empty
     snapshot for any other window, so the policy has nothing to choose there, and
     refuses to execute anything while the pinned window is not in front.
+    `last_observation_hidden` records whether the most recent observation was
+    blanked that way, so a run that ends on it can say why.
     """
 
     def __init__(self, inner: WindowsUIABackend, hwnd: int) -> None:
         self.inner = inner
         self.hwnd = hwnd
+        self.last_observation_hidden = False
 
     def observe(self) -> DesktopSnapshot:
         snapshot = self.inner.observe()
-        if snapshot.context.get("hwnd") != self.hwnd:
+        self.last_observation_hidden = snapshot.context.get("hwnd") != self.hwnd
+        if self.last_observation_hidden:
             return replace(snapshot, elements=(), revision=_revision(()))
         return snapshot
 
@@ -112,26 +116,31 @@ def run_windowed_subtask(
         raise ValueError("name the target with process= or window=")
 
     backend = WindowsUIABackend()
-    if launch:
-        # "start" resolves URIs such as ms-settings: as well as executables.
-        subprocess.run(["cmd", "/c", "start", "", launch], check=True)
-    hwnd = None
-    for _ in range(40):
-        hwnd = find_window(process_name=process, title_contains=window)
-        if hwnd:
+    try:
+        # With a launch, this is the window the launch opened -- never a matching
+        # window that already existed, which may hold the user's own document.
+        hwnd = resolve_window(process_name=process, title_contains=window, launch=launch)
+    except LookupError as exc:
+        raise RuntimeError(f"Target window for process={process!r} window={window!r}: {exc}") from exc
+
+    # Something (often a just-launched window) can take the foreground back while
+    # this one settles. Check before JEV starts: a run pinned to a window that isn't
+    # in front only ever sees an empty screen, and would end BLOCKED doing nothing.
+    for _ in range(2):
+        if not activate_window(hwnd):
+            continue
+        time.sleep(0.5)
+        if foreground_window() == hwnd:
             break
-        time.sleep(0.25)
-    if not hwnd:
-        raise RuntimeError(f"No visible window matched process={process!r} window={window!r}")
-    if not activate_window(hwnd):
-        raise RuntimeError("Found the window but Windows refused to bring it to the foreground")
-    time.sleep(0.5)
+    else:
+        raise RuntimeError("The target window would not stay in front (another window kept taking focus)")
 
     config = RuntimeConfig(
         timeout_s=180,
         confidence_thresholds=SUGGESTED_CONFIDENCE_THRESHOLDS if confidence_gate else None,
     )
-    executor = DesktopExecutor(WindowScope(backend, hwnd), policy, config=config)
+    scope = WindowScope(backend, hwnd)
+    executor = DesktopExecutor(scope, policy, config=config)
     if print_trace:
         print(f"Jev via {policy.base_url}; hands off the mouse and keyboard until it finishes.\n")
 
@@ -157,6 +166,10 @@ def run_windowed_subtask(
         print(f"step {event.step}: {what}{detail}  confidence={confidence}  [{top}]")
 
     assert result is not None
+    if result.status != TerminalKind.SUBTASK_COMPLETE and scope.last_observation_hidden:
+        # Otherwise this reads as JEV's own judgment, when JEV was shown an empty screen.
+        why = "The target window was not in front when JEV last looked, so it saw nothing to act on"
+        result = replace(result, reason=f"{why} ({result.reason})" if result.reason else why)
     return result
 
 

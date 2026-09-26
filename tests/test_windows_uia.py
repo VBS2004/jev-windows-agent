@@ -395,6 +395,45 @@ def test_input_struct_matches_winuser_h() -> None:
     assert ctypes.sizeof(w._INPUT) == 40
 
 
+# -- picking the window a task runs in -------------------------------------------------
+
+TERMINAL = 99  # whatever was in front before a launch, e.g. the shell running the planner
+
+
+def test_launch_targets_the_window_it_opened_not_an_older_match() -> None:
+    # Live bug: with older Notepad windows open, the first match was an old window;
+    # the launched one then took the foreground and the run saw an empty screen.
+    assert w._pick_launched_window({1, 2}, [3, 1, 2], foreground=1, foreground_before=TERMINAL) == 3
+
+
+def test_launch_keeps_waiting_rather_than_taking_an_older_window() -> None:
+    # The launched window isn't up yet; the only match is someone's existing window.
+    assert w._pick_launched_window({1}, [1], foreground=TERMINAL, foreground_before=TERMINAL) is None
+
+
+def test_single_instance_app_is_found_by_coming_to_the_front() -> None:
+    # Settings reuses its window: no new window, but the launch brings it forward.
+    assert w._pick_launched_window({5}, [5], foreground=5, foreground_before=TERMINAL) == 5
+
+
+def test_a_window_already_in_front_before_the_launch_is_not_evidence_of_it() -> None:
+    assert w._pick_launched_window({5}, [5], foreground=5, foreground_before=5) is None
+
+
+def test_existing_window_needs_exactly_one_match_or_the_one_in_front() -> None:
+    assert w._pick_existing_window([7], foreground=TERMINAL) == 7
+    assert w._pick_existing_window([7, 8, 9], foreground=8) == 8
+    with pytest.raises(LookupError, match="no visible window"):
+        w._pick_existing_window([], foreground=TERMINAL)
+
+
+def test_several_matches_with_none_in_front_is_refused_not_guessed() -> None:
+    # Typing replaces a document's text, so guessing which of the user's windows to
+    # target could overwrite their work.
+    with pytest.raises(LookupError, match="3 windows match"):
+        w._pick_existing_window([7, 8, 9], foreground=TERMINAL)
+
+
 # -- platform boundaries ---------------------------------------------------------------
 
 

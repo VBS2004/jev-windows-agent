@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -72,6 +73,14 @@ Rules:
 - "input" holds literal text/values the execution model may need to type or set,
   keyed by a short name your goal/verify text can refer to. Only put here what the
   step's goal actually needs entered -- never place secrets or credentials here.
+- Input values are typed exactly as written. Each must be the final text itself
+  ("2026-09-26"), never a description or placeholder ("today's date", "<date>",
+  "the current time"). Work out dates and times from the current date and time you
+  are given; if a value can't be known, refuse instead of guessing.
+- Typing replaces all of the text in the target field or document. To write new
+  content, launch the app so a new window opens (e.g. "notepad.exe") rather than
+  targeting a document that may already hold the user's work; never target an
+  existing document the user didn't mention.
 - "shortcut" adds any keyboard chord beyond the defaults (Enter/Escape/Tab/arrows,
   Ctrl+A/C/V/Z/Shift+Z/F) that a step's goal requires, as {"MOD+X": "what it does"}.
   MOD means Ctrl on Windows. Omit if the defaults suffice.
@@ -91,12 +100,25 @@ def load_deepseek_key() -> str:
     return key
 
 
+def current_context(now: datetime | None = None) -> str:
+    """Facts the planner can't know on its own: the local date, time, and time zone."""
+    now = (now or datetime.now()).astimezone()
+    offset = now.strftime("%z")
+    return (
+        f"Current local date and time: {now:%A}, {now:%Y-%m-%d} {now:%H:%M} "
+        f"(UTC{offset[:3]}:{offset[3:]}). The desktop is Windows."
+    )
+
+
 def call_deepseek(request: str, *, api_key: str, model: str) -> dict:
     """One DeepSeek chat-completions call, retried like TypeSafeJevPolicy._post."""
     body = {
         "model": model,
         "messages": [
             {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+            # The model has no clock: without this, "today's date" came back as that
+            # literal placeholder string.
+            {"role": "system", "content": current_context()},
             {"role": "user", "content": request},
         ],
         "response_format": {"type": "json_object"},

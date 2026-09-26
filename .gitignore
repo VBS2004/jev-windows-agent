@@ -10,3 +10,4 @@ build/
 !.env.example
 examples/demo_agent.py
 .DS_Store
+*.tmp.py

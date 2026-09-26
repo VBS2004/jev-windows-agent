@@ -1,0 +1,1280 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import time
+from collections import deque
+from typing import Any
+
+from ..errors import (
+    StaleDesktopState,
+    UnsupportedDesktopAction,
+)
+from ..models import (
+    ActionKind,
+    Bounds,
+    DesktopElement,
+    DesktopSnapshot,
+    ExecutableAction,
+)
+from .macos_ax import MacOSAXBackend
+from .macos_ocr import MacOSOCRProvider
+
+logger = logging.getLogger(__name__)
+
+
+class MacOSHybridBackend:
+    """
+    Accessibility + Apple Vision OCR.
+
+    AX gives us:
+      - semantic controls
+      - text fields
+      - buttons
+      - native actions
+
+    OCR gives us:
+      - visible text AX missed
+      - screen coordinates
+
+    Both become DesktopElement objects.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_ax_elements: int = 1200,
+        max_ax_depth: int = 18,
+        ocr_recognition_level: str = "fast",
+        ocr_min_confidence: float = 0.45,
+        ocr_max_elements: int = 160,
+    ) -> None:
+
+        self.ax = MacOSAXBackend(
+            max_elements=max_ax_elements,
+            max_depth=max_ax_depth,
+        )
+
+        self.ocr = MacOSOCRProvider(
+            recognition_level=
+                ocr_recognition_level,
+            min_confidence=
+                ocr_min_confidence,
+            max_elements=
+                ocr_max_elements,
+        )
+
+        self._ocr_elements: dict[
+            str,
+            DesktopElement,
+        ] = {}
+
+    def observe(
+        self,
+    ) -> DesktopSnapshot:
+
+        ax_snapshot = self.ax.observe()
+
+        pid = int(
+            ax_snapshot.context["pid"]
+        )
+
+        modal_elements, modal_bounds = _collect_modal_ax_elements(
+            self.ax,
+            pid,
+        )
+
+        modal_active = bool(
+            modal_elements
+        )
+
+        if modal_active:
+            # A modal blocks interaction with the content behind it.
+            ax_elements = tuple(
+                modal_elements
+            )
+        else:
+            ax_elements = tuple(
+                ax_snapshot.elements
+            )
+
+        # While a modal is active, don't force OCR to the old AX window title.
+        # Let Quartz choose the frontmost app surface.
+        preferred_title = (
+            None
+            if modal_active
+            else ax_snapshot.window
+        )
+
+        ocr_capture = self.ocr.observe(
+            pid=pid,
+            app_name=ax_snapshot.application,
+            preferred_window_title=preferred_title,
+        )
+
+        ocr_elements = _dedupe_ocr(
+            ocr_capture.elements
+        )
+
+        if (
+            modal_active
+            and modal_bounds is not None
+        ):
+            # If the modal is attached inside the parent window, OCR may still
+            # see the whole parent. Keep only text whose center is in the modal.
+            ocr_elements = tuple(
+                element
+                for element in ocr_elements
+                if (
+                    element.bounds is not None
+                    and _bounds_contains_point(
+                        modal_bounds,
+                        element.bounds.center,
+                    )
+                )
+            )
+
+        elements = (
+            tuple(ax_elements)
+            + tuple(ocr_elements)
+        )
+
+        self._ocr_elements = {
+            element.id: element
+            for element in ocr_elements
+        }
+
+        revision_payload = [
+            {
+                "id": element.id,
+                "source": element.source,
+                "guard": (
+                    element.id
+                    if element.source == "macos_ocr"
+                    else element.semantic_guard()
+                ),
+            }
+            for element in sorted(
+                elements,
+                key=lambda item: item.id,
+            )
+        ]
+
+        revision_payload.append(
+            {
+                "modal_active": modal_active,
+                "modal_bounds": _bounds_payload(
+                    modal_bounds
+                ),
+            }
+        )
+
+        revision = hashlib.sha256(
+            json.dumps(
+                revision_payload,
+                sort_keys=True,
+                default=str,
+            ).encode()
+        ).hexdigest()
+
+        context = dict(
+            ax_snapshot.context
+        )
+
+        context.update(
+            {
+                "backend": "macos_hybrid",
+                "ocr_window_id": ocr_capture.window_id,
+                "ocr_window_bounds": _bounds_payload(
+                    ocr_capture.window_bounds
+                ),
+                "perception_sources": [
+                    "macos_ax",
+                    "macos_ocr",
+                ],
+                "modal_active": modal_active,
+                "modal_bounds": _bounds_payload(
+                    modal_bounds
+                ),
+                "modal_element_count": len(
+                    modal_elements
+                ),
+            }
+        )
+
+        logger.debug(
+            "hybrid observe ax=%d ocr=%d modal=%s",
+            len(ax_elements), len(ocr_elements), modal_active,
+        )
+
+        return DesktopSnapshot(
+            application=ax_snapshot.application,
+            window=(
+                ocr_capture.window_title
+                or ax_snapshot.window
+            ),
+            revision=revision,
+            elements=elements,
+            context=context,
+            captured_at_ms=round(
+                time.time() * 1000
+            ),
+        )
+
+
+    def is_fresh(
+        self,
+        snapshot: DesktopSnapshot,
+        action: ExecutableAction,
+    ) -> bool:
+
+        # Keyboard shortcuts / scroll / wait
+        # remain handled by AX.
+
+        if action.target_id is None:
+
+            return self.ax.is_fresh(
+                snapshot,
+                action,
+            )
+
+        try:
+            target = snapshot.element(
+                action.target_id
+            )
+
+        except KeyError:
+            return False
+
+        # Normal AX element.
+
+        if target.source != "macos_ocr":
+
+            return self.ax.is_fresh(
+                snapshot,
+                action,
+            )
+
+        # OCR target: make sure the app is
+        # still frontmost.
+
+        if (
+            self.ocr.frontmost_pid()
+            != snapshot.context.get("pid")
+        ):
+            return False
+
+        # And make sure we're still looking at
+        # the same window.
+
+        current_window = (
+            self.ocr.front_window(
+                int(
+                    snapshot.context["pid"]
+                ),
+                preferred_title=
+                    snapshot.window,
+            )
+        )
+
+        if current_window is None:
+            return False
+
+        if (
+            current_window.window_id
+            != target.metadata.get(
+                "window_id"
+            )
+        ):
+            return False
+
+        return True
+
+    def execute(
+        self,
+        snapshot: DesktopSnapshot,
+        action: ExecutableAction,
+    ) -> None:
+
+        if not self.is_fresh(
+            snapshot,
+            action,
+        ):
+            raise StaleDesktopState(
+                "macOS hybrid target changed "
+                "before execution"
+            )
+
+        # Global action.
+        if action.target_id is None:
+
+            self.ax.execute(
+                snapshot,
+                action,
+            )
+
+            return
+
+        target = snapshot.element(
+            action.target_id
+        )
+
+        # Normal accessibility target:
+        # keep using AX native execution.
+
+        if target.source != "macos_ocr":
+
+            self.ax.execute(
+                snapshot,
+                action,
+            )
+
+            return
+
+        # OCR target = coordinate execution.
+
+        if target.bounds is None:
+
+            raise UnsupportedDesktopAction(
+                "OCR target has no screen bounds"
+            )
+
+        if action.kind == ActionKind.TYPE_TEXT:
+            if action.value is None:
+                raise UnsupportedDesktopAction(
+                    "TYPE_TEXT requires an agent-supplied value"
+                )
+
+            # OCR gives us a visual focus target. action.value has already been
+            # validated/resolved from Subtask.inputs by arc_cua.
+            _click(
+                target.bounds,
+                count=1,
+                button="left",
+            )
+
+            time.sleep(0.08)
+            _select_all()
+            time.sleep(0.08)
+            _type_text(str(action.value))
+            return
+
+        if action.kind == ActionKind.CLICK:
+
+            _click(
+                target.bounds,
+                count=1,
+                button="left",
+            )
+
+            return
+
+        if (
+            action.kind
+            == ActionKind.DOUBLE_CLICK
+        ):
+
+            _click(
+                target.bounds,
+                count=2,
+                button="left",
+            )
+
+            return
+
+        if (
+            action.kind
+            == ActionKind.RIGHT_CLICK
+        ):
+
+            _click(
+                target.bounds,
+                count=1,
+                button="right",
+            )
+
+            return
+
+        if (
+            action.kind
+            == ActionKind.DRAG_TO
+        ):
+
+            if not action.secondary_target_id:
+
+                raise UnsupportedDesktopAction(
+                    "DRAG_TO requires a "
+                    "destination"
+                )
+
+            destination = snapshot.element(
+                action.secondary_target_id
+            )
+
+            if destination.bounds is None:
+
+                raise UnsupportedDesktopAction(
+                    "Drag destination has "
+                    "no screen bounds"
+                )
+
+            _drag(
+                target.bounds,
+                destination.bounds,
+            )
+
+            return
+
+        raise UnsupportedDesktopAction(
+            "OCR targets currently support "
+            "CLICK, DOUBLE_CLICK, RIGHT_CLICK "
+            f"and DRAG_TO; got "
+            f"{action.kind.value}"
+        )
+
+
+def _select_all() -> None:
+    Q = _quartz()
+
+    # macOS Cmd+A. Virtual keycode 0 is the A key.
+    keycode_a = 0
+
+    for down in (True, False):
+        event = Q.CGEventCreateKeyboardEvent(
+            None,
+            keycode_a,
+            down,
+        )
+        Q.CGEventSetFlags(
+            event,
+            Q.kCGEventFlagMaskCommand,
+        )
+        Q.CGEventPost(
+            Q.kCGHIDEventTap,
+            event,
+        )
+
+
+def _type_text(
+    text: str,
+    *,
+    check=None,
+) -> None:
+    """
+    Type an agent-supplied literal one Character at a time.
+
+    This mirrors Third Hand's macOS implementation:
+    - one Unicode key-down/key-up pair per character
+    - modifier flags explicitly cleared on every event
+    - optional focus check before each character
+
+    This function never generates or chooses text.
+    """
+    if not text:
+        return
+
+    Q = _quartz()
+
+    for index, character in enumerate(text):
+        if check is not None:
+            check()
+
+        down = Q.CGEventCreateKeyboardEvent(
+            None,
+            0,
+            True,
+        )
+        up = Q.CGEventCreateKeyboardEvent(
+            None,
+            0,
+            False,
+        )
+
+        if down is None or up is None:
+            raise RuntimeError(
+                "Could not create macOS Unicode keyboard events"
+            )
+
+        # A preceding Cmd+A must not turn Unicode input into shortcuts.
+        Q.CGEventSetFlags(down, 0)
+        Q.CGEventSetFlags(up, 0)
+
+        # CGEventKeyboardSetUnicodeString uses UTF-16 code units.
+        unit_count = len(character.encode("utf-16-le")) // 2
+
+        Q.CGEventKeyboardSetUnicodeString(
+            down,
+            unit_count,
+            character,
+        )
+        Q.CGEventKeyboardSetUnicodeString(
+            up,
+            unit_count,
+            character,
+        )
+
+        Q.CGEventPost(Q.kCGHIDEventTap, down)
+        Q.CGEventPost(Q.kCGHIDEventTap, up)
+
+        # Third Hand periodically yields. This tiny pause gives Electron/custom
+        # controls a chance to process the event queue without slowing typing.
+        if index % 16 == 15:
+            time.sleep(0.001)
+
+
+
+def _dedupe_ocr(
+    elements: tuple[DesktopElement, ...],
+) -> tuple[DesktopElement, ...]:
+    # Collapse overlapping Apple Vision observations.
+    #
+    # Vision can return multiple slightly different readings for the same visual
+    # control/text region. Prefer the highest-confidence reading so JEV sees one
+    # candidate instead of several competing copies.
+
+    kept: list[DesktopElement] = []
+
+    ordered = sorted(
+        elements,
+        key=lambda element: float(
+            element.metadata.get("confidence", 0.0)
+        ),
+        reverse=True,
+    )
+
+    for candidate in ordered:
+        if candidate.bounds is None:
+            continue
+
+        duplicate = False
+
+        for existing in kept:
+            if existing.bounds is None:
+                continue
+
+            if _iou(candidate.bounds, existing.bounds) >= 0.55:
+                duplicate = True
+                break
+
+        if not duplicate:
+            kept.append(candidate)
+
+    return tuple(kept)
+
+
+def _iou(
+    a: Bounds,
+    b: Bounds,
+) -> float:
+    left = max(a.x, b.x)
+    top = max(a.y, b.y)
+    right = min(a.x + a.width, b.x + b.width)
+    bottom = min(a.y + a.height, b.y + b.height)
+
+    width = max(0.0, right - left)
+    height = max(0.0, bottom - top)
+
+    intersection = width * height
+
+    if intersection <= 0.0:
+        return 0.0
+
+    union = (
+        a.width * a.height
+        + b.width * b.height
+        - intersection
+    )
+
+    if union <= 0.0:
+        return 0.0
+
+    return intersection / union
+
+
+def _ax_framework() -> Any:
+    try:
+        import ApplicationServices as AX  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "ApplicationServices is required for macOS modal observation. "
+            "Install: pip install 'arc-cua[macos]'"
+        ) from exc
+
+    return AX
+
+
+def _ax_copy_attribute(
+    AX: Any,
+    element: Any,
+    attribute: str,
+) -> Any:
+    try:
+        result = AX.AXUIElementCopyAttributeValue(
+            element,
+            attribute,
+            None,
+        )
+    except Exception:
+        return None
+
+    if isinstance(
+        result,
+        tuple,
+    ):
+        if len(result) < 2:
+            return None
+
+        try:
+            error_code = int(
+                result[0]
+            )
+        except Exception:
+            error_code = 0
+
+        if error_code != 0:
+            return None
+
+        return result[1]
+
+    return result
+
+
+def _ax_values(
+    value: Any,
+) -> list[Any]:
+    if value is None:
+        return []
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+        ),
+    ):
+        return list(value)
+
+    try:
+        return list(value)
+    except Exception:
+        return [value]
+
+
+def _ax_role(
+    AX: Any,
+    element: Any,
+) -> str:
+    value = _ax_copy_attribute(
+        AX,
+        element,
+        getattr(
+            AX,
+            "kAXRoleAttribute",
+            "AXRole",
+        ),
+    )
+
+    return str(
+        value or ""
+    )
+
+
+def _ax_is_modal(
+    AX: Any,
+    element: Any,
+) -> bool:
+    role = _ax_role(
+        AX,
+        element,
+    )
+
+    if role in {
+        "AXSheet",
+        "AXDialog",
+        "AXPopover",
+    }:
+        return True
+
+    modal = _ax_copy_attribute(
+        AX,
+        element,
+        "AXModal",
+    )
+
+    try:
+        return bool(modal)
+    except Exception:
+        return False
+
+
+def _ax_children(
+    AX: Any,
+    element: Any,
+) -> list[Any]:
+    children: list[Any] = []
+
+    for attribute in (
+        getattr(
+            AX,
+            "kAXSheetsAttribute",
+            "AXSheets",
+        ),
+        getattr(
+            AX,
+            "kAXChildrenAttribute",
+            "AXChildren",
+        ),
+    ):
+        value = _ax_copy_attribute(
+            AX,
+            element,
+            attribute,
+        )
+
+        children.extend(
+            _ax_values(value)
+        )
+
+    return children
+
+
+def _find_modal_roots(
+    AX: Any,
+    app: Any,
+) -> list[Any]:
+    seeds: list[
+        tuple[Any, int]
+    ] = []
+
+    focused_window = _ax_copy_attribute(
+        AX,
+        app,
+        getattr(
+            AX,
+            "kAXFocusedWindowAttribute",
+            "AXFocusedWindow",
+        ),
+    )
+
+    if focused_window is not None:
+        seeds.append(
+            (
+                focused_window,
+                0,
+            )
+        )
+
+    app_windows = _ax_copy_attribute(
+        AX,
+        app,
+        getattr(
+            AX,
+            "kAXWindowsAttribute",
+            "AXWindows",
+        ),
+    )
+
+    for window in _ax_values(
+        app_windows
+    ):
+        seeds.append(
+            (
+                window,
+                0,
+            )
+        )
+
+    roots: list[Any] = []
+    queue = deque(seeds)
+    visited: set[str] = set()
+
+    max_nodes = 400
+    max_depth = 8
+    seen = 0
+
+    while (
+        queue
+        and seen < max_nodes
+    ):
+        element, depth = queue.popleft()
+        seen += 1
+
+        key = repr(
+            element
+        )
+
+        if key in visited:
+            continue
+
+        visited.add(
+            key
+        )
+
+        if _ax_is_modal(
+            AX,
+            element,
+        ):
+            roots.append(
+                element
+            )
+            continue
+
+        if depth >= max_depth:
+            continue
+
+        for child in _ax_children(
+            AX,
+            element,
+        ):
+            queue.append(
+                (
+                    child,
+                    depth + 1,
+                )
+            )
+
+    unique: list[Any] = []
+    seen_keys: set[str] = set()
+
+    for root in roots:
+        key = repr(
+            root
+        )
+
+        if key in seen_keys:
+            continue
+
+        seen_keys.add(
+            key
+        )
+        unique.append(
+            root
+        )
+
+    return unique
+
+
+def _modal_element_id(
+    ref: Any,
+) -> str:
+    return (
+        "ax_modal_"
+        + hashlib.sha1(
+            repr(ref).encode()
+        ).hexdigest()[:14]
+    )
+
+
+def _collect_modal_ax_elements(
+    ax_backend: Any,
+    pid: int,
+) -> tuple[
+    tuple[DesktopElement, ...],
+    Bounds | None,
+]:
+    AX = _ax_framework()
+
+    try:
+        app = AX.AXUIElementCreateApplication(
+            pid
+        )
+    except Exception:
+        return (), None
+
+    roots = _find_modal_roots(
+        AX,
+        app,
+    )
+
+    if not roots:
+        return (), None
+
+    elements: list[
+        DesktopElement
+    ] = []
+
+    root_bounds: list[
+        Bounds
+    ] = []
+
+    queue: deque[
+        tuple[
+            Any,
+            str | None,
+            int,
+            bool,
+        ]
+    ] = deque(
+        (
+            root,
+            None,
+            0,
+            True,
+        )
+        for root in roots
+    )
+
+    visited: set[str] = set()
+
+    max_elements = 400
+    max_depth = 14
+
+    while (
+        queue
+        and len(elements) < max_elements
+    ):
+        (
+            ref,
+            parent_id,
+            depth,
+            is_root,
+        ) = queue.popleft()
+
+        ref_key = repr(
+            ref
+        )
+
+        if ref_key in visited:
+            continue
+
+        visited.add(
+            ref_key
+        )
+
+        element_id = _modal_element_id(
+            ref
+        )
+
+        try:
+            ax_backend.register_ref(
+                element_id, ref
+            )
+        except Exception:
+            pass
+
+        try:
+            element = ax_backend._element_from_ref(
+                ref,
+                element_id,
+                parent_id=parent_id,
+            )
+        except Exception:
+            element = None
+
+        next_parent = parent_id
+
+        if element is not None:
+            elements.append(
+                element
+            )
+            next_parent = (
+                element.id
+            )
+
+            if (
+                is_root
+                and element.bounds is not None
+            ):
+                root_bounds.append(
+                    element.bounds
+                )
+
+        if depth >= max_depth:
+            continue
+
+        for child in _ax_children(
+            AX,
+            ref,
+        ):
+            queue.append(
+                (
+                    child,
+                    next_parent,
+                    depth + 1,
+                    False,
+                )
+            )
+
+    modal_bounds = _union_bounds(
+        root_bounds
+    )
+
+    if modal_bounds is None:
+        modal_bounds = _union_bounds(
+            [
+                element.bounds
+                for element in elements
+                if element.bounds is not None
+            ]
+        )
+
+    return (
+        tuple(elements),
+        modal_bounds,
+    )
+
+
+def _union_bounds(
+    bounds_list: list[Bounds],
+) -> Bounds | None:
+    if not bounds_list:
+        return None
+
+    left = min(
+        bounds.x
+        for bounds in bounds_list
+    )
+    top = min(
+        bounds.y
+        for bounds in bounds_list
+    )
+    right = max(
+        bounds.x + bounds.width
+        for bounds in bounds_list
+    )
+    bottom = max(
+        bounds.y + bounds.height
+        for bounds in bounds_list
+    )
+
+    return Bounds(
+        x=left,
+        y=top,
+        width=max(
+            1.0,
+            right - left,
+        ),
+        height=max(
+            1.0,
+            bottom - top,
+        ),
+    )
+
+
+def _bounds_contains_point(
+    bounds: Bounds,
+    point: tuple[float, float],
+) -> bool:
+    x, y = point
+
+    return (
+        bounds.x <= x <= (
+            bounds.x + bounds.width
+        )
+        and bounds.y <= y <= (
+            bounds.y + bounds.height
+        )
+    )
+
+
+def _quartz() -> Any:
+
+    try:
+        import Quartz  # type: ignore
+
+    except ImportError as exc:
+
+        raise RuntimeError(
+            "Install the macOS extra: "
+            "pip install 'arc-cua[macos]'"
+        ) from exc
+
+    return Quartz
+
+
+def _click(
+    bounds: Bounds,
+    *,
+    count: int,
+    button: str,
+) -> None:
+
+    Q = _quartz()
+
+    point = bounds.center
+
+    if button == "right":
+
+        mouse_button = (
+            Q.kCGMouseButtonRight
+        )
+
+        down_type = (
+            Q.kCGEventRightMouseDown
+        )
+
+        up_type = (
+            Q.kCGEventRightMouseUp
+        )
+
+    else:
+
+        mouse_button = (
+            Q.kCGMouseButtonLeft
+        )
+
+        down_type = (
+            Q.kCGEventLeftMouseDown
+        )
+
+        up_type = (
+            Q.kCGEventLeftMouseUp
+        )
+
+    move = Q.CGEventCreateMouseEvent(
+        None,
+        Q.kCGEventMouseMoved,
+        point,
+        mouse_button,
+    )
+
+    Q.CGEventPost(
+        Q.kCGHIDEventTap,
+        move,
+    )
+
+    for index in range(count):
+
+        click_state = (
+            index + 1
+            if count > 1
+            else 1
+        )
+
+        down = (
+            Q.CGEventCreateMouseEvent(
+                None,
+                down_type,
+                point,
+                mouse_button,
+            )
+        )
+
+        up = (
+            Q.CGEventCreateMouseEvent(
+                None,
+                up_type,
+                point,
+                mouse_button,
+            )
+        )
+
+        Q.CGEventSetIntegerValueField(
+            down,
+            Q.kCGMouseEventClickState,
+            click_state,
+        )
+
+        Q.CGEventSetIntegerValueField(
+            up,
+            Q.kCGMouseEventClickState,
+            click_state,
+        )
+
+        Q.CGEventPost(
+            Q.kCGHIDEventTap,
+            down,
+        )
+
+        Q.CGEventPost(
+            Q.kCGHIDEventTap,
+            up,
+        )
+
+        if index + 1 < count:
+            time.sleep(0.06)
+
+
+def _drag(
+    source: Bounds,
+    destination: Bounds,
+) -> None:
+
+    Q = _quartz()
+
+    start = source.center
+    end = destination.center
+
+    button = Q.kCGMouseButtonLeft
+
+    Q.CGEventPost(
+        Q.kCGHIDEventTap,
+        Q.CGEventCreateMouseEvent(
+            None,
+            Q.kCGEventMouseMoved,
+            start,
+            button,
+        ),
+    )
+
+    Q.CGEventPost(
+        Q.kCGHIDEventTap,
+        Q.CGEventCreateMouseEvent(
+            None,
+            Q.kCGEventLeftMouseDown,
+            start,
+            button,
+        ),
+    )
+
+    # Use intermediate drag points rather
+    # than teleporting the cursor.
+
+    for step in range(1, 6):
+
+        t = step / 5
+
+        point = (
+            start[0]
+            + (end[0] - start[0]) * t,
+
+            start[1]
+            + (end[1] - start[1]) * t,
+        )
+
+        Q.CGEventPost(
+            Q.kCGHIDEventTap,
+
+            Q.CGEventCreateMouseEvent(
+                None,
+                Q.kCGEventLeftMouseDragged,
+                point,
+                button,
+            ),
+        )
+
+        time.sleep(0.015)
+
+    Q.CGEventPost(
+        Q.kCGHIDEventTap,
+
+        Q.CGEventCreateMouseEvent(
+            None,
+            Q.kCGEventLeftMouseUp,
+            end,
+            button,
+        ),
+    )
+
+
+def _bounds_payload(
+    bounds: Bounds | None,
+) -> dict[str, float] | None:
+
+    if bounds is None:
+        return None
+
+    return {
+        "x": round(bounds.x, 1),
+        "y": round(bounds.y, 1),
+        "width": round(
+            bounds.width,
+            1,
+        ),
+        "height": round(
+            bounds.height,
+            1,
+        ),
+    }
+

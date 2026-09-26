@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from arc_cua import (
+from jev_windows_agent import (
     ActionKind,
     DesktopElement,
     DesktopSnapshot,

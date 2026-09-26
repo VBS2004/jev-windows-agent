@@ -1,8 +1,8 @@
 import time
 
-from arc_cua import DesktopExecutor, Subtask
-from arc_cua.backends import MacOSAXBackend
-from arc_cua.policies import TypeSafeJevPolicy
+from jev_windows_agent import DesktopExecutor, Subtask
+from jev_windows_agent.backends import MacOSAXBackend
+from jev_windows_agent.policies import TypeSafeJevPolicy
 
 
 print("Switch to Apple Calendar.")

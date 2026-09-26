@@ -1,8 +1,8 @@
-# Handoff: Windows UIA backend for arc-cua
+# Handoff: Windows UIA backend for jev-windows-agent
 
 ## Status — implemented (2026-09-26, Windows side)
 
-`src/arc_cua/backends/windows_uia.py` (`WindowsUIABackend`) is built and run
+`src/jev_windows_agent/backends/windows_uia.py` (`WindowsUIABackend`) is built and run
 against real apps: Notepad, Settings, File Explorer, and Chrome's frame. As the
 spec required, nothing in `runtime.py`, `validation.py`, `models.py`, or
 `policies/typesafe.py` changed to support it. (`runtime.py` separately gained
@@ -86,8 +86,8 @@ or Win32 code, hence the handoff instead of doing it there).
 ## Goal, scope, decided already — don't re-litigate
 
 - Build `WindowsUIABackend` implementing the `DesktopBackend` protocol
-  (`src/arc_cua/protocols.py`), analogous to `MacOSAXBackend`
-  (`src/arc_cua/backends/macos_ax.py` — **read this file in full, it is the
+  (`src/jev_windows_agent/protocols.py`), analogous to `MacOSAXBackend`
+  (`src/jev_windows_agent/backends/macos_ax.py` — **read this file in full, it is the
   template to mirror**, including its exceptions, structure, and the way it
   splits `observe` / `is_fresh` / `execute` / tree-walk / element-mapping).
 - **Scope: UI Automation only, no OCR fallback yet.** This mirrors
@@ -109,7 +109,7 @@ class DesktopBackend(Protocol):
 ```
 
 No inheritance needed — structural typing. Put the new file at
-`src/arc_cua/backends/windows_uia.py`.
+`src/jev_windows_agent/backends/windows_uia.py`.
 
 ## Library choices (decide/pin these; not yet chosen)
 
@@ -188,7 +188,7 @@ reference for execution:
 Mirror `_press_key`/`_press_hotkey`/`_scroll` in `macos_ax.py`, but with
 `SendInput` + Windows virtual-key codes (`VK_*` from `winuser.h`) instead of
 `CGEventCreateKeyboardEvent`. Build a `_KEYCODES` dict keyed by the exact
-same string vocabulary already defined in `src/arc_cua/keyboard.py`
+same string vocabulary already defined in `src/jev_windows_agent/keyboard.py`
 (`KEY_NAMES`, `MODIFIERS`) — that module is shared/platform-agnostic and
 should not need any change; only the backend's private
 key-name-to-VK-code table is new. `MOD` should map to `VK_CONTROL` on

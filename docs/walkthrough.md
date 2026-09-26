@@ -1,4 +1,4 @@
-# arc-cua walkthrough
+# jev-windows-agent walkthrough
 
 A guided read of how this codebase actually works, module by module, with the
 control flow of one subtask end to end.
@@ -8,7 +8,7 @@ control flow of one subtask end to end.
 ## The mental model
 
 A **planner** (any LLM or deterministic code, outside this package) decides
-*what* needs to happen and hands off a bounded `Subtask`. `arc-cua` then owns
+*what* needs to happen and hands off a bounded `Subtask`. `jev-windows-agent` then owns
 the tight observe → decide → execute → settle loop, using **JEV** (via
 TypeSafe) as a fast per-step decision model instead of a frontier LLM call per
 click. The loop terminates with `SUBTASK_COMPLETE`, `BLOCKED`, or
@@ -276,7 +276,7 @@ chains the two around `DesktopExecutor.run`. This is exactly the
 - **`windows_uia.py`** (`WindowsUIABackend`) — the Windows counterpart of
   `macos_ax.py`: UI Automation through raw `comtypes` (no OCR fallback yet),
   `SendInput` for keyboard, pointer, and wheel events. `comtypes` is imported
-  lazily, so `arc_cua.backends` stays importable on macOS/Linux.
+  lazily, so `jev_windows_agent.backends` stays importable on macOS/Linux.
   - `observe()` fetches the foreground window's whole ControlView subtree in
     **one** cross-process `BuildUpdatedCache` call, then walks the cached
     copy — per-property UIA reads are cross-process COM calls and would make

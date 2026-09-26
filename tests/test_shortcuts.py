@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from arc_cua import (
+from jev_windows_agent import (
     ActionKind,
     Decision,
     DesktopExecutor,
@@ -14,12 +14,12 @@ from arc_cua import (
     TerminalKind,
     subtask_from_dict,
 )
-from arc_cua.backends import StateMachineBackend, macos_ax
-from arc_cua.errors import InvalidDecision, UnsupportedDesktopAction
-from arc_cua.keyboard import KEY_NAMES
-from arc_cua.models import DEFAULT_HOTKEYS
-from arc_cua.policies import TypeSafeJevPolicy
-from arc_cua.validation import materialize_action
+from jev_windows_agent.backends import StateMachineBackend, macos_ax
+from jev_windows_agent.errors import InvalidDecision, UnsupportedDesktopAction
+from jev_windows_agent.keyboard import KEY_NAMES
+from jev_windows_agent.models import DEFAULT_HOTKEYS
+from jev_windows_agent.policies import TypeSafeJevPolicy
+from jev_windows_agent.validation import materialize_action
 
 
 def snapshot() -> DesktopSnapshot:

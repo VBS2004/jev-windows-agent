@@ -15,11 +15,11 @@ import threading
 
 import pytest
 
-from arc_cua import ActionKind
-from arc_cua.backends import windows_uia as w
-from arc_cua.errors import UnsupportedDesktopAction
-from arc_cua.keyboard import KEY_NAMES
-from arc_cua.models import Bounds
+from jev_windows_agent import ActionKind
+from jev_windows_agent.backends import windows_uia as w
+from jev_windows_agent.errors import UnsupportedDesktopAction
+from jev_windows_agent.keyboard import KEY_NAMES
+from jev_windows_agent.models import Bounds
 
 BUTTON, EDIT, DOCUMENT, LIST_ITEM, PANE, GROUP, TEXT, CHECKBOX, SLIDER, MENU_ITEM = (
     50000, 50004, 50030, 50007, 50033, 50026, 50020, 50002, 50015, 50011,
@@ -400,7 +400,7 @@ def test_input_struct_matches_winuser_h() -> None:
 
 def test_importing_backends_does_not_load_comtypes() -> None:
     # The backends package must stay importable on macOS/Linux, where comtypes is absent.
-    code = "import sys, arc_cua.backends; print('comtypes' in sys.modules)"
+    code = "import sys, jev_windows_agent.backends; print('comtypes' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.strip() == "False"
 

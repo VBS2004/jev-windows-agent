@@ -328,7 +328,7 @@ def _frameworks() -> tuple[Any, Any]:
         import ApplicationServices as AS  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "Install the macOS extra: pip install 'arc-cua[macos]'"
+            "Install the macOS extra: pip install 'jev-windows-agent[macos]'"
         ) from exc
     return AS, AppKit
 
@@ -471,7 +471,7 @@ def _coerce_settable_ax_value(
         except ImportError as exc:
             raise RuntimeError(
                 "Foundation is required for macOS date/time AX values. "
-                "Install: pip install 'arc-cua[macos]'"
+                "Install: pip install 'jev-windows-agent[macos]'"
             ) from exc
 
         return Foundation.NSDate.dateWithTimeIntervalSince1970_(
@@ -543,7 +543,7 @@ def _quartz() -> Any:
     try:
         import Quartz  # type: ignore
     except ImportError as exc:
-        raise RuntimeError("Install the macOS extra: pip install 'arc-cua[macos]'") from exc
+        raise RuntimeError("Install the macOS extra: pip install 'jev-windows-agent[macos]'") from exc
     return Quartz
 
 

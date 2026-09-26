@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence
 
-from arc_cua import (
+from jev_windows_agent import (
     ActionKind,
     Decision,
     DesktopElement,
@@ -36,9 +36,9 @@ from arc_cua import (
     Subtask,
     TerminalKind,
 )
-from arc_cua.backends import WindowsUIABackend
-from arc_cua.backends.windows_uia import activate_window, find_window
-from arc_cua.models import ActionRecord
+from jev_windows_agent.backends import WindowsUIABackend
+from jev_windows_agent.backends.windows_uia import activate_window, find_window
+from jev_windows_agent.models import ActionRecord
 
 Step = Callable[[DesktopSnapshot], Decision]
 
@@ -65,12 +65,12 @@ def find(snapshot: DesktopSnapshot, *, role: str, name: str, exact: bool = True)
 
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    workdir = Path(tempfile.mkdtemp(prefix="arc-cua-smoke-"))
+    workdir = Path(tempfile.mkdtemp(prefix="jev-windows-agent-smoke-"))
     # A unique name per run: Notepad tabs are matched by file name, and a tab left
     # over from an earlier run must never be mistaken for this run's tab.
-    target = workdir / f"arc_cua_smoke_{time.strftime('%H%M%S')}.txt"
+    target = workdir / f"jev_windows_agent_smoke_{time.strftime('%H%M%S')}.txt"
     target.write_text("original text\n", encoding="utf-8")
-    line = f"typed by arc-cua at {time.strftime('%H:%M:%S')}"
+    line = f"typed by jev-windows-agent at {time.strftime('%H:%M:%S')}"
 
     backend = WindowsUIABackend()
     subprocess.Popen(["notepad.exe", str(target)])
@@ -163,7 +163,7 @@ def main() -> None:
 
 def close_own_tab(backend: WindowsUIABackend, file_name: str) -> None:
     """Close the smoke-test tab via its own Close Tab button; saved, so no prompt."""
-    from arc_cua.validation import materialize_action
+    from jev_windows_agent.validation import materialize_action
 
     snapshot = backend.observe()
     tab = find(snapshot, role="TabItem", name=file_name, exact=False)

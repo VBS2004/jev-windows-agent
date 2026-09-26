@@ -12,15 +12,15 @@ Windows port's implementation notes and status, see
 
 ## The one-sentence version
 
-A planner (any LLM, or deterministic code) hands `arc-cua` a bounded `Subtask`
-— goal, literal inputs, success criteria — and `arc-cua` runs the
+A planner (any LLM, or deterministic code) hands `jev-windows-agent` a bounded `Subtask`
+— goal, literal inputs, success criteria — and `jev-windows-agent` runs the
 observe → decide → validate → execute → settle loop until the subtask
 completes, gets blocked, or needs a human/bigger model, using JEV (via
 TypeSafe) as a fast per-step decision model instead of a frontier LLM call per
 click.
 
 ```
-planner ──Subtask──▶ arc-cua ──ExecutionResult──▶ planner
+planner ──Subtask──▶ jev-windows-agent ──ExecutionResult──▶ planner
                         │
                         │  observe → decide → validate → execute → settle
                         │  (repeats until terminal)
@@ -123,7 +123,7 @@ DesktopSnapshot          one full observation
   application, window, revision (content-addressed fingerprint)
   elements: tuple[DesktopElement, ...], context: dict
 
-Subtask                  the planner's contract — never invented by arc-cua
+Subtask                  the planner's contract — never invented by jev-windows-agent
   goal, verification (required), inputs, constraints,
   max_actions, shortcuts, metadata
 
@@ -327,7 +327,7 @@ deterministic runtime tests.
 | `BLOCKED` | No supported operation is making progress | Runtime (no-change-limit), or policy |
 | `NEEDS_AGENT` | Needs higher-level reasoning, ran out of budget, timed out, was cancelled, or a decision was too uncertain | Runtime or policy |
 
-The caller always owns what happens next — `arc-cua` never retries a subtask
+The caller always owns what happens next — `jev-windows-agent` never retries a subtask
 on its own initiative past these boundaries.
 
 ---
@@ -350,7 +350,7 @@ produce this JSON shape and read it back.
 ## Repository map
 
 ```
-src/arc_cua/
+src/jev_windows_agent/
   models.py            data model: DesktopElement, Snapshot, Subtask, Decision, ...
   protocols.py          DesktopBackend / DecisionPolicy interfaces
   runtime.py            DesktopExecutor — the observe/decide/execute/settle loop
@@ -397,7 +397,7 @@ scoped in `docs/windows-backend-handoff.md`:
 
 - **OCR fallback on Windows**, mirroring `macos_ocr.py`/`macos_hybrid.py`,
   to reach browser content and custom-drawn UIs the way macOS already can.
-- **Cross-window / cross-app orchestration** stays outside `arc-cua` by
+- **Cross-window / cross-app orchestration** stays outside `jev-windows-agent` by
   design — the planner decides which window to bring forward and splits work
   into one bounded `Subtask` per app; the runtime's job stops at "run this
   one bounded task against whatever's in front."

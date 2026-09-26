@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from arc_cua import ActionKind, DesktopElement, DesktopSnapshot
-from arc_cua.runtime import _structural_signature
+from jev_windows_agent import ActionKind, DesktopElement, DesktopSnapshot
+from jev_windows_agent.runtime import _structural_signature
 
 
 def _snap(elements: tuple[DesktopElement, ...], revision: str = "1") -> DesktopSnapshot:

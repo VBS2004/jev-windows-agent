@@ -6,12 +6,12 @@
 
 ---
 
-`arc-cua` lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model that executes the UI loop — no frontier model needed for every click.
+`jev-windows-agent` lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model that executes the UI loop — no frontier model needed for every click.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how it all fits together, [`docs/walkthrough.md`](docs/walkthrough.md) for a module-by-module code tour, and [`docs/windows-backend-handoff.md`](docs/windows-backend-handoff.md) for the Windows port's implementation notes.
 
 ```python
-from arc_cua import execute_payload
+from jev_windows_agent import execute_payload
 
 result = execute_payload(executor, {
     "goal": "Play Get Lucky by Daft Punk in Spotify",
@@ -38,14 +38,14 @@ A typical CUA loop:
 observe → large model → click → observe → large model → type → observe → large model → click
 ```
 
-`arc-cua` separates high-level reasoning from low-level execution:
+`jev-windows-agent` separates high-level reasoning from low-level execution:
 
 ```text
 planner / LLM
      ↓
 bounded subtask
      ↓
-arc-cua
+jev-windows-agent
      ↓
 JEV → action → action → action → action
      ↓
@@ -64,7 +64,7 @@ any planner / CUA
         | Subtask(goal, inputs, verification, constraints)
         v
 +-----------------------+
-|       arc-cua         |
+|   jev-windows-agent   |
 |                       |
 | observe desktop       |
 | AX + local OCR        |
@@ -103,7 +103,7 @@ The upstream agent decides what needs to happen, what literal text may be used, 
 Supply extra keyboard shortcuts for an individual subtask, with descriptions that tell JEV what they do:
 
 ```python
-from arc_cua import Subtask
+from jev_windows_agent import Subtask
 
 task = Subtask(
     goal="Save the current document",
@@ -122,13 +122,13 @@ result = execute_payload(executor, {
 })
 ```
 
-Chords use uppercase key names and one or more `MOD`, `CTRL`, `ALT`, or `SHIFT` modifiers, for example `MOD+S`, `CTRL+ALT+7`, or `SHIFT+F12`. `MOD` means Command on macOS and Ctrl on Windows. Supported keys include A-Z, 0-9, F1-F20, navigation keys, and named punctuation keys; see [the keyboard vocabulary](src/arc_cua/keyboard.py). The macOS backend uses US/ANSI physical key positions. Each shortcut is one chord, not a sequence of actions.
+Chords use uppercase key names and one or more `MOD`, `CTRL`, `ALT`, or `SHIFT` modifiers, for example `MOD+S`, `CTRL+ALT+7`, or `SHIFT+F12`. `MOD` means Command on macOS and Ctrl on Windows. Supported keys include A-Z, 0-9, F1-F20, navigation keys, and named punctuation keys; see [the keyboard vocabulary](src/jev_windows_agent/keyboard.py). The macOS backend uses US/ANSI physical key positions. Each shortcut is one chord, not a sequence of actions.
 
 Malformed declarations fail when the subtask is created. JEV can choose only offered chords; runtime validation also rejects hotkeys outside the defaults and the current subtask's declarations, including decisions from custom policies.
 
 ### Hybrid macOS perception
 
-`arc-cua` combines two local perception sources:
+`jev-windows-agent` combines two local perception sources:
 
 - **Accessibility (AX)** — semantic controls: buttons, fields, menus, roles, values, native actions
 - **Apple Vision OCR** — visible screen text with bounding boxes, for apps with incomplete accessibility
@@ -141,7 +141,7 @@ On Windows, `WindowsUIABackend` reads the foreground window through UI Automatio
 
 ### Runtime-owned settling
 
-After a mutating action, `arc-cua` re-observes the UI until the desktop is structurally stable or a timeout is reached. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
+After a mutating action, `jev-windows-agent` re-observes the UI until the desktop is structurally stable or a timeout is reached. The decision model decides **what to do**; the runtime decides **when the UI is ready to reason over again**.
 
 ### Terminal states
 

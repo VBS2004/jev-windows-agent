@@ -15,8 +15,8 @@ import argparse
 import sys
 import time
 
-from arc_cua.backends import WindowsUIABackend
-from arc_cua.backends.windows_uia import activate_window, find_window
+from jev_windows_agent.backends import WindowsUIABackend
+from jev_windows_agent.backends.windows_uia import activate_window, find_window
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--process", help="executable name of a running app to bring forward, e.g. notepad")

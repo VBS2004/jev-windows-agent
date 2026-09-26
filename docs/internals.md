@@ -1,4 +1,4 @@
-# arc-cua internals
+# jev-windows-agent internals
 
 Detailed notes on perception, execution, and safety mechanisms.
 
@@ -70,7 +70,7 @@ The AX backend can currently:
 
 Some desktop applications expose little useful accessibility information.
 
-For those interfaces, `arc-cua` captures the target window locally and uses Apple Vision OCR to turn visible screen text into indexed elements.
+For those interfaces, `jev-windows-agent` captures the target window locally and uses Apple Vision OCR to turn visible screen text into indexed elements.
 
 ```python
 DesktopElement(
@@ -108,7 +108,7 @@ What doyou want to plafP
 Q Whatdoyouwantto play
 ```
 
-`arc-cua` avoids using exact OCR text as visual identity. OCR regions use coarse spatial identity, and overlapping detections are deduplicated before they are exposed to JEV.
+`jev-windows-agent` avoids using exact OCR text as visual identity. OCR regions use coarse spatial identity, and overlapping detections are deduplicated before they are exposed to JEV.
 
 This keeps small OCR fluctuations from looking like entirely new UI state.
 
@@ -151,7 +151,7 @@ JEV's selected chord is validated against that request's choices, and `materiali
 
 Literal text always originates from the upstream agent.
 
-For OCR-backed inputs, `arc-cua` uses the same macOS text-delivery strategy from Third Hand:
+For OCR-backed inputs, `jev-windows-agent` uses the same macOS text-delivery strategy from Third Hand:
 
 ```text
 focus visual input → Cmd+A → brief settle → emit Unicode CGEvent key-down/up one character at a time

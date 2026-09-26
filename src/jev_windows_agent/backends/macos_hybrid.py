@@ -347,7 +347,7 @@ class MacOSHybridBackend:
                 )
 
             # OCR gives us a visual focus target. action.value has already been
-            # validated/resolved from Subtask.inputs by arc_cua.
+            # validated/resolved from Subtask.inputs by jev_windows_agent.
             _click(
                 target.bounds,
                 count=1,
@@ -598,7 +598,7 @@ def _ax_framework() -> Any:
     except ImportError as exc:
         raise RuntimeError(
             "ApplicationServices is required for macOS modal observation. "
-            "Install: pip install 'arc-cua[macos]'"
+            "Install: pip install 'jev-windows-agent[macos]'"
         ) from exc
 
     return AX
@@ -1077,7 +1077,7 @@ def _quartz() -> Any:
 
         raise RuntimeError(
             "Install the macOS extra: "
-            "pip install 'arc-cua[macos]'"
+            "pip install 'jev-windows-agent[macos]'"
         ) from exc
 
     return Quartz

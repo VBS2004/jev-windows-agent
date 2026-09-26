@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
-from arc_cua import (
+from jev_windows_agent import (
     ActionKind,
     Decision,
     DesktopElement,
@@ -14,8 +14,8 @@ from arc_cua import (
     Subtask,
     TerminalKind,
 )
-from arc_cua.backends import StateMachineBackend
-from arc_cua.policies import ScriptedPolicy
+from jev_windows_agent.backends import StateMachineBackend
+from jev_windows_agent.policies import ScriptedPolicy
 
 
 def snapshot(state: dict) -> DesktopSnapshot:

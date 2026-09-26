@@ -28,7 +28,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from arc_cua import (
+from jev_windows_agent import (
     SUGGESTED_CONFIDENCE_THRESHOLDS,
     ActionKind,
     DesktopExecutor,
@@ -37,10 +37,10 @@ from arc_cua import (
     RuntimeConfig,
     Subtask,
 )
-from arc_cua.backends import WindowsUIABackend
-from arc_cua.backends.windows_uia import _revision, activate_window, find_window
-from arc_cua.errors import UnsupportedDesktopAction
-from arc_cua.policies import TypeSafeJevPolicy
+from jev_windows_agent.backends import WindowsUIABackend
+from jev_windows_agent.backends.windows_uia import _revision, activate_window, find_window
+from jev_windows_agent.errors import UnsupportedDesktopAction
+from jev_windows_agent.policies import TypeSafeJevPolicy
 
 
 class NotepadTabScope:
@@ -123,10 +123,10 @@ def main() -> None:
     policy = TypeSafeJevPolicy()  # fail on configuration before touching the desktop
     print(f"Jev via {policy.base_url} (model {policy.model})")
 
-    workdir = Path(tempfile.mkdtemp(prefix="arc-cua-jev-"))
-    target = workdir / f"arc_cua_jev_{time.strftime('%H%M%S')}.txt"
+    workdir = Path(tempfile.mkdtemp(prefix="jev-windows-agent-jev-"))
+    target = workdir / f"jev_windows_agent_jev_{time.strftime('%H%M%S')}.txt"
     target.write_text("This draft line should be replaced.\n", encoding="utf-8")
-    line = "Hello from arc-cua on Windows, driven by JEV."
+    line = "Hello from jev-windows-agent on Windows, driven by JEV."
 
     backend = WindowsUIABackend()
     print(f"Opening {target} in Notepad...")
@@ -164,7 +164,7 @@ def main() -> None:
     )
     executor = DesktopExecutor(NotepadTabScope(backend, target.name, hwnd), policy, config=config)
 
-    print("Starting arc_cua...\n")
+    print("Starting jev_windows_agent...\n")
     result = None
     for event in executor.run_iter(task):
         result = event.result or result

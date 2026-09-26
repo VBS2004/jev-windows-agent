@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from arc_cua import ActionKind, DesktopElement, DesktopSnapshot, Subtask
-from arc_cua.policies import TypeSafeJevPolicy
+from jev_windows_agent import ActionKind, DesktopElement, DesktopSnapshot, Subtask
+from jev_windows_agent.policies import TypeSafeJevPolicy
 
 
 def test_dynamic_questions_use_observed_targets_and_agent_inputs() -> None:

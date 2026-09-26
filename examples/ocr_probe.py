@@ -1,6 +1,6 @@
 import time
 
-from arc_cua.backends import (
+from jev_windows_agent.backends import (
     MacOSHybridBackend,
 )
 

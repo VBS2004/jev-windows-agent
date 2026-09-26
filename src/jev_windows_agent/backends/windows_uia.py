@@ -1222,7 +1222,7 @@ def _uia() -> tuple[Any, Any]:
         import comtypes  # type: ignore
         import comtypes.client  # type: ignore
     except ImportError as exc:
-        raise RuntimeError("Install the Windows extra: pip install 'arc-cua[windows]'") from exc
+        raise RuntimeError("Install the Windows extra: pip install 'jev-windows-agent[windows]'") from exc
     comtypes.client.GetModule("UIAutomationCore.dll")
     from comtypes.gen import UIAutomationClient as UIA  # type: ignore
 

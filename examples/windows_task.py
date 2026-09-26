@@ -30,7 +30,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from arc_cua import (
+from jev_windows_agent import (
     SUGGESTED_CONFIDENCE_THRESHOLDS,
     ActionKind,
     DesktopExecutor,
@@ -39,11 +39,11 @@ from arc_cua import (
     RuntimeConfig,
     Subtask,
 )
-from arc_cua.api import result_to_dict
-from arc_cua.backends import WindowsUIABackend
-from arc_cua.backends.windows_uia import _revision, activate_window, find_window
-from arc_cua.errors import UnsupportedDesktopAction
-from arc_cua.policies import TypeSafeJevPolicy
+from jev_windows_agent.api import result_to_dict
+from jev_windows_agent.backends import WindowsUIABackend
+from jev_windows_agent.backends.windows_uia import _revision, activate_window, find_window
+from jev_windows_agent.errors import UnsupportedDesktopAction
+from jev_windows_agent.policies import TypeSafeJevPolicy
 
 
 class WindowScope:

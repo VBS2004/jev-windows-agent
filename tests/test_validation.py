@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from arc_cua import ActionKind, Decision, DesktopElement, DesktopSnapshot, Subtask
-from arc_cua.errors import InvalidDecision
-from arc_cua.validation import materialize_action
+from jev_windows_agent import ActionKind, Decision, DesktopElement, DesktopSnapshot, Subtask
+from jev_windows_agent.errors import InvalidDecision
+from jev_windows_agent.validation import materialize_action
 
 
 def base_snapshot() -> DesktopSnapshot:
@@ -206,4 +206,4 @@ def test_terminal_decision_cannot_materialize() -> None:
         )
 
 
-from arc_cua import TerminalKind  # noqa: E402
+from jev_windows_agent import TerminalKind  # noqa: E402

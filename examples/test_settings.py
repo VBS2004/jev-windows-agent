@@ -1,16 +1,16 @@
 import subprocess
 import time
 
-from arc_cua import (
+from jev_windows_agent import (
     DesktopExecutor,
     Subtask,
 )
 
-from arc_cua.backends import (
+from jev_windows_agent.backends import (
     MacOSHybridBackend,
 )
 
-from arc_cua.policies import (
+from jev_windows_agent.policies import (
     TypeSafeJevPolicy,
 )
 
@@ -34,7 +34,7 @@ time.sleep(4)
 
 
 # -------------------------
-# 2. Set up arc_cua
+# 2. Set up jev_windows_agent
 # -------------------------
 
 executor = DesktopExecutor(
@@ -82,7 +82,7 @@ task = Subtask(
 # -------------------------
 
 print("\nTask: change macOS appearance to Dark")
-print("Starting arc_cua...\n")
+print("Starting jev_windows_agent...\n")
 
 result = executor.run(task)
 

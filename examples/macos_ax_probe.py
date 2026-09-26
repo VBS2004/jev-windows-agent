@@ -7,7 +7,7 @@ Usage:
 Grant your terminal/Python host Accessibility permission first.
 """
 
-from arc_cua.backends import MacOSAXBackend
+from jev_windows_agent.backends import MacOSAXBackend
 
 
 backend = MacOSAXBackend()

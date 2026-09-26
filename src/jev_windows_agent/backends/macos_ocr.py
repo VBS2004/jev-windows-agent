@@ -534,7 +534,7 @@ def _frameworks() -> tuple[
 
         raise RuntimeError(
             "Install the macOS extra: "
-            "pip install 'arc-cua[macos]'"
+            "pip install 'jev-windows-agent[macos]'"
         ) from exc
 
     return (

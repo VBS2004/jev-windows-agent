@@ -5,9 +5,9 @@ import json
 import httpx
 import pytest
 
-from arc_cua import ActionKind, DesktopElement, DesktopSnapshot, Subtask, TerminalKind
-from arc_cua.policies import TypeSafeJevPolicy
-from arc_cua.policies.typesafe import OPENROUTER_DECISIONS_URL, OPENROUTER_JEV_MODEL, TYPESAFE_SYSTEM_ONE_URL
+from jev_windows_agent import ActionKind, DesktopElement, DesktopSnapshot, Subtask, TerminalKind
+from jev_windows_agent.policies import TypeSafeJevPolicy
+from jev_windows_agent.policies.typesafe import OPENROUTER_DECISIONS_URL, OPENROUTER_JEV_MODEL, TYPESAFE_SYSTEM_ONE_URL
 
 
 @pytest.fixture(autouse=True)

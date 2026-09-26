@@ -92,6 +92,74 @@ def key_value(text: str) -> tuple[str, str]:
     return name.strip(), value
 
 
+def run_windowed_subtask(
+    policy: TypeSafeJevPolicy,
+    *,
+    subtask: Subtask,
+    process: str | None = None,
+    window: str | None = None,
+    launch: str | None = None,
+    confidence_gate: bool = False,
+    print_trace: bool = True,
+):
+    """Bring one window forward and run one bounded Subtask against it with JEV.
+
+    This is the whole "planner" contract in one call: name an app, hand it a goal.
+    Used directly by this script's CLI, and by examples/planner.py for each step of
+    a multi-step plan.
+    """
+    if not (process or window):
+        raise ValueError("name the target with process= or window=")
+
+    backend = WindowsUIABackend()
+    if launch:
+        # "start" resolves URIs such as ms-settings: as well as executables.
+        subprocess.run(["cmd", "/c", "start", "", launch], check=True)
+    hwnd = None
+    for _ in range(40):
+        hwnd = find_window(process_name=process, title_contains=window)
+        if hwnd:
+            break
+        time.sleep(0.25)
+    if not hwnd:
+        raise RuntimeError(f"No visible window matched process={process!r} window={window!r}")
+    if not activate_window(hwnd):
+        raise RuntimeError("Found the window but Windows refused to bring it to the foreground")
+    time.sleep(0.5)
+
+    config = RuntimeConfig(
+        timeout_s=180,
+        confidence_thresholds=SUGGESTED_CONFIDENCE_THRESHOLDS if confidence_gate else None,
+    )
+    executor = DesktopExecutor(WindowScope(backend, hwnd), policy, config=config)
+    if print_trace:
+        print(f"Jev via {policy.base_url}; hands off the mouse and keyboard until it finishes.\n")
+
+    result = None
+    for event in executor.run_iter(subtask):
+        result = event.result or result
+        if event.result is not None and event.record is not None:
+            continue  # the runtime re-yields the last step alongside its result
+        if not print_trace:
+            continue
+        decision = event.decision
+        what = (decision.kind or decision.terminal).value
+        action = event.action
+        detail = ""
+        if event.record and event.record.target_name:
+            detail = f" -> {event.record.target_name!r}"
+        elif action is not None and (action.hotkey or action.key or action.scroll_direction):
+            detail = f" {action.hotkey or action.key or action.scroll_direction}"
+        confidence = "n/a" if decision.confidence is None else f"{decision.confidence:.2f}"
+        operation = decision.raw.get("answers", {}).get("operation", {}) if decision.raw else {}
+        ranked = sorted(operation.get("probabilities", {}).items(), key=lambda kv: kv[1], reverse=True)[:3]
+        top = ", ".join(f"{name} {p:.2f}" for name, p in ranked if p > 0)
+        print(f"step {event.step}: {what}{detail}  confidence={confidence}  [{top}]")
+
+    assert result is not None
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     where = parser.add_argument_group("target window (one of)")
@@ -125,49 +193,18 @@ def main() -> None:
         max_actions=args.max_actions,
     )
 
-    backend = WindowsUIABackend()
-    if args.launch:
-        # "start" resolves URIs such as ms-settings: as well as executables.
-        subprocess.run(["cmd", "/c", "start", "", args.launch], check=True)
-    hwnd = None
-    for _ in range(40):
-        hwnd = find_window(process_name=args.process, title_contains=args.window)
-        if hwnd:
-            break
-        time.sleep(0.25)
-    if not hwnd:
-        sys.exit(f"No visible window matched process={args.process!r} window={args.window!r}")
-    if not activate_window(hwnd):
-        sys.exit("Found the window but Windows refused to bring it to the foreground")
-    time.sleep(0.5)
+    try:
+        result = run_windowed_subtask(
+            policy,
+            subtask=subtask,
+            process=args.process,
+            window=args.window,
+            launch=args.launch,
+            confidence_gate=args.confidence_gate,
+        )
+    except RuntimeError as exc:
+        sys.exit(str(exc))
 
-    config = RuntimeConfig(
-        timeout_s=180,
-        confidence_thresholds=SUGGESTED_CONFIDENCE_THRESHOLDS if args.confidence_gate else None,
-    )
-    executor = DesktopExecutor(WindowScope(backend, hwnd), policy, config=config)
-    print(f"Jev via {policy.base_url}; hands off the mouse and keyboard until it finishes.\n")
-
-    result = None
-    for event in executor.run_iter(subtask):
-        result = event.result or result
-        if event.result is not None and event.record is not None:
-            continue  # the runtime re-yields the last step alongside its result
-        decision = event.decision
-        what = (decision.kind or decision.terminal).value
-        action = event.action
-        detail = ""
-        if event.record and event.record.target_name:
-            detail = f" -> {event.record.target_name!r}"
-        elif action is not None and (action.hotkey or action.key or action.scroll_direction):
-            detail = f" {action.hotkey or action.key or action.scroll_direction}"
-        confidence = "n/a" if decision.confidence is None else f"{decision.confidence:.2f}"
-        operation = decision.raw.get("answers", {}).get("operation", {}) if decision.raw else {}
-        ranked = sorted(operation.get("probabilities", {}).items(), key=lambda kv: kv[1], reverse=True)[:3]
-        top = ", ".join(f"{name} {p:.2f}" for name, p in ranked if p > 0)
-        print(f"step {event.step}: {what}{detail}  confidence={confidence}  [{top}]")
-
-    assert result is not None
     print(f"\nstatus: {result.status.value} after {result.actions_taken} actions")
     if result.reason:
         print("reason:", result.reason)

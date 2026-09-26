@@ -247,6 +247,14 @@ python examples/windows_task.py --window Settings --launch ms-settings: `
 
 Text JEV should type goes in `--input name="value"`; JEV picks which input to use but never invents text.
 
+`windows_task.py` runs one bounded step in one window that you name — you're acting as the planner. For a request spanning several apps, `examples/planner.py` adds a thin planning layer above JEV: a cheap LLM (DeepSeek by default) turns your request into an ordered list of single-window steps, shows you the whole plan, and runs each step through the same JEV loop only after you confirm it:
+
+```powershell
+python examples/planner.py --request "Turn on dark mode, then open Notepad and write today's date"
+```
+
+Needs `DEEPSEEK_API_KEY` (see `.env.example`). JEV still can't invent a click or a target — the planner only ever hands it the same goal/verify/input shape you'd type by hand.
+
 The smoke test and JEV example work on a file they create in a temp directory. Windows 11 Notepad opens files as tabs beside your own documents, so `test_notepad.py` scopes the backend so JEV cannot observe (and so cannot act on) any other tab or window.
 
 ### Windows limitations

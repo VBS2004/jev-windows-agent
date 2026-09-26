@@ -400,4 +400,10 @@ scoped in `docs/windows-backend-handoff.md`:
 - **Cross-window / cross-app orchestration** stays outside `jev-windows-agent` by
   design — the planner decides which window to bring forward and splits work
   into one bounded `Subtask` per app; the runtime's job stops at "run this
-  one bounded task against whatever's in front."
+  one bounded task against whatever's in front." `examples/windows_task.py`
+  is that boundary made explicit: you *are* the planner, typing the goal and
+  target window by hand. `examples/planner.py` is a minimal reference planner
+  above it — a cheap LLM (DeepSeek) turns one natural-language request into an
+  ordered list of single-window steps, each run through the same JEV loop
+  after you confirm it — showing the pattern without adding orchestration to
+  the core package itself.

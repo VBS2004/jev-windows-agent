@@ -12,6 +12,16 @@ Windows UI Automation (UIA) backend for LLM computer-use / desktop-automation ag
 
 ---
 
+## Demo
+
+`jev plan --yes --request "Open Apple Music and play my liked songs"` on Windows 11 — the planner proposes a one-step plan, then JEV live-renders each decision (action, target, confidence, top candidates) as it navigates the sidebar, opens the "Favourite Songs" playlist, and hits play:
+
+https://github.com/VBS2004/jev-windows-agent/raw/main/docs/media/demo.mp4
+
+SUBTASK_COMPLETE after 4 actions — no frontier-model call in the loop.
+
+---
+
 `jev-windows-agent` lets a planner or CUA agent hand off bounded desktop subtasks to a fast decision model that executes the UI loop — no frontier model needed for every click.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how it all fits together, [`docs/walkthrough.md`](docs/walkthrough.md) for a module-by-module code tour, and [`docs/windows-backend-handoff.md`](docs/windows-backend-handoff.md) for the Windows port's implementation notes.

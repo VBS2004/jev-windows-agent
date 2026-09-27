@@ -281,6 +281,25 @@ The smoke test and JEV example work on a file they create in a temp directory. W
 - A non-elevated process cannot automate an elevated (administrator) window; `observe()` raises `PermissionError`.
 - Hotkeys use US-layout virtual keys. Typed text is layout-independent.
 - `SET_VALUE` follows what UIA reports as writable. In File Explorer that includes file items, where setting the value renames the file; the policy can still only use values the planner supplied.
+- A control named "Play" doesn't always start playback. In Apple Music, JEV clicked one and playback did not begin — some controls that read as Play only queue or select. `MEDIA_PLAY_PAUSE` is the reliable path for playback, which is why it's offered by default; whether JEV prefers it to a visible button is its own call.
+- Chromium and Electron apps (Spotify, VS Code, Discord) switch accessibility off when idle, and the first look at a cold one sees only the window frame. The backend waits up to 2.5s for the real tree, but a first run after a long idle can still come back `BLOCKED` with nothing to act on; running it again works, because the first attempt woke the tree.
+- `NEEDS_AGENT` on a task that looks done is usually JEV declining to claim success it can't observe, not a crash. Check the result's reason and the screen before assuming the action didn't happen.
+
+---
+
+## What's been verified live
+
+The Windows backend is exercised against real apps, not only unit tests. Confirmed end to end on Windows 11:
+
+| Works | Notes |
+|---|---|
+| Notepad: type and save | `windows_notepad_smoke.py`, `test_notepad.py`, `jev run` — verified on disk |
+| Settings: search, navigate | "Open the Colors page inside Personalization" — 2 actions, unattended |
+| Apple Music: launch by name, navigate | Launches via Start-menu lookup, reaches the playlist; see the "Play" caveat above |
+| Media keys | `MEDIA_PLAY_PAUSE` started Apple Music playback |
+| File Explorer, Chrome frame | Perception only (`windows_uia_probe.py`): stable element ids, 60–140ms per observation |
+
+Not yet verified: multi-app plans running unattended start to finish, and anything inside browser or Electron *content* (see the OCR gap in the roadmap).
 
 ---
 

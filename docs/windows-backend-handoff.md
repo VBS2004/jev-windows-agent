@@ -14,6 +14,20 @@ platform-independent and off by default.)
 - `examples/windows_notepad_smoke.py`: the full `DesktopExecutor` loop with a
   deterministic policy, no API key. It passes: type, save (verified on disk),
   open a menu (items observed), Escape, scroll.
+- `jev` CLI (`src/jev_windows_agent/cli.py`): `jev run` and `jev plan`, the
+  styled front end over the same `runner.py`/`planner.py` the examples use.
+  `jev plan --yes` approves a whole plan up front (but still stops on a step
+  that did not complete).
+- Windows keys: the shared vocabulary now carries `WIN`, `APPS`, `INSERT` and
+  the media/volume keys, with `keyboard.WINDOWS_ONLY_KEYS` marking the subset
+  macOS cannot press. The policy offers platform keys from the snapshot's own
+  backend, so a Windows run gets the media keys and a macOS run does not.
+  `WIN`-based chords are deliberately not offered by default: they open the
+  Start menu, a different window, and a scoped run would go blind.
+- Launching by app name: `resolve_launch_target()` turns "Apple Music" into
+  `shell:AppsFolder\<AppUserModelID>` via `Get-StartApps`, which is what made
+  opening Store apps possible at all -- the planner previously returned an
+  empty plan for them.
 - `examples/test_notepad.py`: the JEV-driven run, **passing through OpenRouter's
   Decisions API**: `TYPE_TEXT` (confidence 0.80), Ctrl+S (0.96),
   `SUBTASK_COMPLETE` (0.53), with the saved file matching. (The key on hand was
@@ -63,6 +77,16 @@ Each of these came from observing real apps, not from preference:
 
 ### Still open
 
+- **A visible "Play" control doesn't always start playback.** In Apple Music,
+  JEV clicked one at 0.75 and playback did not begin; `MEDIA_PLAY_PAUSE`
+  (global, added for this) started it. The general shape -- a control whose
+  name implies an action it doesn't perform on its own -- is a perception
+  problem no amount of policy tuning fixes, and worth a closer look at what
+  UIA exposes for such controls before trusting a name.
+- **Cold Chromium/Electron trees can still lose a first run.** The 2.5s warm-up
+  covers the common case; Spotify after a long idle came back `BLOCKED` once
+  and worked on a rerun. A longer wait, or retrying a first-step `BLOCKED` when
+  the tree is suspiciously small, would close it.
 - Tune `SUGGESTED_CONFIDENCE_THRESHOLDS` from real runs. First data point: the
   correct `SUBTASK_COMPLETE` above came at 0.53, so the suggested 0.75 would
   have escalated it to `NEEDS_AGENT`. The example prints each step's top

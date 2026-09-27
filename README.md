@@ -1,6 +1,12 @@
 # jev-windows-agent
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
+[![Platforms](https://img.shields.io/badge/platform-windows%20%7C%20macos-lightgrey.svg)](#install)
+
 **A Windows UI Automation extension of [`arc-cua`](https://github.com/shhivv/arc-cua) — the superfast action layer for computer-use agents.**
+
+Windows UI Automation (UIA) backend for LLM computer-use / desktop-automation agents — click, type, and navigate real Windows apps (Notepad, Settings, Spotify, File Explorer) from a structured, JEV-driven decision loop instead of screenshot-and-guess. Works with GPT, Claude, Gemini, DeepSeek, or any planner via OpenRouter.
 
 > Original `arc-cua` project and macOS backend by [shhivv](https://github.com/shhivv), built by [Isle](https://tryisle.com) — managed desktop environments for computer-use agents. This repository extends it with a Windows UI Automation (`WindowsUIABackend`) perception + execution backend, OpenRouter transport support, and optional confidence gating, while keeping the original runtime, validation, and JEV decision policy untouched. See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`docs/windows-backend-handoff.md`](docs/windows-backend-handoff.md) for what changed and why.
 

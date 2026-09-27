@@ -969,6 +969,19 @@ _VK_CODES: dict[str, int] = {
     "PERIOD": 0xBE,
     "SLASH": 0xBF,
     "GRAVE": 0xC0,
+    "INSERT": 0x2D,
+    # The Windows key, on its own, opens the Start menu.
+    "WIN": 0x5B,
+    "APPS": 0x5D,
+    # Media keys are global: Windows routes them to whichever app owns playback, so
+    # they reach a music app that is not the window in front.
+    "VOLUME_MUTE": 0xAD,
+    "VOLUME_DOWN": 0xAE,
+    "VOLUME_UP": 0xAF,
+    "MEDIA_NEXT": 0xB0,
+    "MEDIA_PREV": 0xB1,
+    "MEDIA_STOP": 0xB2,
+    "MEDIA_PLAY_PAUSE": 0xB3,
 }
 
 _VK_SHIFT = 0x10
@@ -978,11 +991,18 @@ _VK_LWIN = 0x5B
 _VK_RWIN = 0x5C
 _VK_RETURN = 0x0D
 
-# MOD is Ctrl on Windows, so MOD+CTRL collapses into one Ctrl press.
-_MODIFIER_VKS = {"MOD": _VK_CONTROL, "CTRL": _VK_CONTROL, "ALT": _VK_MENU, "SHIFT": _VK_SHIFT}
+# MOD is Ctrl on Windows, so MOD+CTRL collapses into one Ctrl press. WIN is the
+# Windows key, which has no macOS counterpart.
+_MODIFIER_VKS = {
+    "MOD": _VK_CONTROL, "CTRL": _VK_CONTROL, "ALT": _VK_MENU, "SHIFT": _VK_SHIFT, "WIN": _VK_LWIN,
+}
 
 # Keys whose scan codes need KEYEVENTF_EXTENDEDKEY, or apps read them as numpad keys.
-_EXTENDED_VKS = frozenset({0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E})
+# The Windows/menu keys and the media keys are extended too.
+_EXTENDED_VKS = frozenset({
+    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E,
+    0x5B, 0x5C, 0x5D, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3,
+})
 
 _KEYEVENTF_EXTENDEDKEY = 0x0001
 _KEYEVENTF_KEYUP = 0x0002
@@ -1665,6 +1685,114 @@ def _pick_existing_window(matches: list[int], foreground: int | None) -> int:
     )
 
 
+def looks_like_app_name(launch: str) -> bool:
+    """Whether a launch target is a plain app name rather than a command, path, or URI.
+
+    "Apple Music" is a name; "notepad.exe", "ms-settings:", and "C:\\dir\\App.exe" are
+    not. A name has to be resolved to something the shell can actually start.
+    """
+    text = launch.strip()
+    if not text or "\\" in text or "/" in text or ":" in text or ".exe" in text.lower():
+        return False
+    return not text.startswith("-")
+
+
+def installed_apps(timeout_s: float = 20.0) -> dict[str, str]:
+    """Every Start-menu app, as {display name: AppID}, via PowerShell's Get-StartApps.
+
+    This is how a Store app becomes launchable: its AppID is an AppUserModelID such as
+    "AppleInc.AppleMusicWin_nzyj5cx40ttqa!App", which only starts through
+    "shell:AppsFolder\\<AppID>". Desktop apps come back as plain paths, which start as
+    they are. Capturing through pipes is safe here, unlike the app launch itself:
+    PowerShell exits on its own and leaves no detached child holding the pipe open.
+    """
+    import subprocess
+
+    command = "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress"
+    try:
+        done = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=False, capture_output=True, text=True, timeout=timeout_s,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise LookupError(f"could not list installed apps: {exc}") from exc
+    if done.returncode != 0 or not done.stdout.strip():
+        raise LookupError(f"could not list installed apps: {(done.stderr or '').strip()[:200]}")
+    try:
+        entries = json.loads(done.stdout)
+    except json.JSONDecodeError as exc:
+        raise LookupError(f"could not parse the installed-app list: {exc}") from exc
+    if isinstance(entries, dict):  # a single app comes back unwrapped
+        entries = [entries]
+    return {str(e["Name"]): str(e["AppID"]) for e in entries if e.get("Name") and e.get("AppID")}
+
+
+def resolve_launch_target(launch: str, *, apps: Mapping[str, str] | None = None) -> str:
+    """Turn a plain app name into something the shell can start; pass anything else through.
+
+    Matching is case-insensitive: exact name first, then a unique prefix, then a unique
+    substring. An ambiguous name raises rather than picking one of several apps.
+    """
+    if not looks_like_app_name(launch):
+        return launch
+    catalogue = installed_apps() if apps is None else apps
+    wanted = launch.strip().casefold()
+    exact = [app_id for name, app_id in catalogue.items() if name.casefold() == wanted]
+    prefix = [app_id for name, app_id in catalogue.items() if name.casefold().startswith(wanted)]
+    contains = [app_id for name, app_id in catalogue.items() if wanted in name.casefold()]
+    for candidates in (exact, prefix, contains):
+        if len(candidates) == 1:
+            app_id = candidates[0]
+            # A desktop app's "AppID" is already a path; only a real AppUserModelID
+            # needs the shell:AppsFolder indirection.
+            return app_id if ("\\" in app_id or "/" in app_id) else f"shell:AppsFolder\\{app_id}"
+        if len(candidates) > 1:
+            names = sorted(n for n in catalogue if wanted in n.casefold())
+            raise LookupError(f"{launch!r} matches several installed apps: {', '.join(names[:6])}")
+    raise LookupError(f"no installed app is named {launch!r}")
+
+
+def _launch_detached(launch: str, *, timeout_s: float) -> None:
+    """Start an app or URI and return as soon as the shell has handed it off.
+
+    Never capture this through pipes. `cmd /c start` exits immediately, but the app
+    it launched inherits the pipe handles, so `capture_output=True` waits for EOF --
+    which arrives only when the *launched app* exits. Launching Notepad then blocked
+    until Notepad was closed, and `timeout=` did not rescue it either: after killing
+    cmd.exe, subprocess.run drains the same still-held pipes and blocks again. It
+    read as "stuck at Finding notepad...".
+
+    A real file handle has no such EOF semantics, so output still comes back (the
+    shell's own message for a bad path is worth reporting) without the wait.
+    """
+    import subprocess
+    import tempfile
+
+    # "Apple Music" becomes shell:AppsFolder\AppleInc.AppleMusicWin_...!App; a command,
+    # path, or URI passes through untouched.
+    target = resolve_launch_target(launch)
+    if target != launch:
+        logger.debug("resolved launch %r to %r", launch, target)
+    try:
+        with tempfile.TemporaryFile() as sink:
+            # "start" resolves URIs such as ms-settings: as well as executables and arguments.
+            done = subprocess.run(
+                ["cmd", "/c", "start", "", target],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=sink,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_s,
+            )
+            sink.seek(0)
+            output = sink.read().decode("utf-8", "replace").strip()
+    except subprocess.TimeoutExpired as exc:
+        raise LookupError(f"launching {launch!r} did not return within {timeout_s:.0f}s") from exc
+    if done.returncode != 0:
+        # e.g. a path with a stray trailing ":" copied from a URI like ms-settings:
+        raise LookupError(f"could not launch {launch!r}: {output or f'exit status {done.returncode}'}")
+
+
 def resolve_window(
     *,
     process_name: str | None = None,
@@ -1689,27 +1817,7 @@ def resolve_window(
     foreground_before = foreground_window()
     deadline = time.perf_counter() + timeout_s
     if launch:
-        import subprocess
-
-        # "start" resolves URIs such as ms-settings: as well as executables and arguments.
-        # Bounded: for a packaged/single-instance app (Notepad, Settings) with several
-        # matching windows already open, "start" was observed to block for 40s+ instead
-        # of returning immediately -- Windows' app-activation broker negotiating with an
-        # already-running instance, outside this function's own control. Unbounded, that
-        # hangs the whole call well past `timeout_s` before the polling loop even starts.
-        try:
-            subprocess.run(
-                ["cmd", "/c", "start", "", launch], check=True, capture_output=True, text=True, timeout=timeout_s
-            )
-        except subprocess.CalledProcessError as exc:
-            # e.g. a path with a stray trailing ":" copied from a URI like ms-settings:
-            reason = (exc.stderr or exc.stdout or "").strip() or f"exit status {exc.returncode}"
-            raise LookupError(f"could not launch {launch!r}: {reason}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise LookupError(
-                f"launching {launch!r} did not return within {timeout_s:.0f}s -- Windows may be slow to activate "
-                "it, especially with several matching windows already open"
-            ) from exc
+        _launch_detached(launch, timeout_s=timeout_s)
         while time.perf_counter() < deadline:
             picked = _pick_launched_window(before, matching(), foreground_window(), foreground_before)
             if picked is not None:

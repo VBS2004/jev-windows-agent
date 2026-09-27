@@ -41,9 +41,13 @@ from jev_windows_agent.policies import TypeSafeJevPolicy
 from jev_windows_agent.runner import TargetWindowError, run_windowed_subtask
 
 
-def continue_after(step: int, total: int) -> bool:
+def continue_after(step: int, total: int, *, assume_yes: bool = False) -> bool:
     """After a step that didn't complete: ask whether to go on -- unless it was the last."""
     if step >= total:
+        return False
+    if assume_yes:
+        # --yes approves the plan, not carrying on past a step that failed.
+        print("Stopping: a step did not complete (--yes does not skip past that).")
         return False
     return confirm(f"Step {step} did not complete. Continue to step {step + 1}/{total} anyway? [y/n]: ") == "y"
 
@@ -62,6 +66,9 @@ def main() -> None:
     parser.add_argument("--max-actions", type=int, default=15, help="per-step JEV action budget")
     parser.add_argument("--confidence-gate", action="store_true",
                         help="hand a step back to you when JEV is less sure than SUGGESTED_CONFIDENCE_THRESHOLDS")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="approve every step up front and run the whole plan without stopping "
+                             "(a step that does not complete still stops the run)")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -81,7 +88,11 @@ def main() -> None:
 
     outcomes: list[tuple[str, str]] = []
     for i, step in enumerate(steps, 1):
-        answer = confirm(f"Run step {i}/{len(steps)}? [y]es / [n]o skip / [q]uit: ")
+        if args.yes:
+            print(f"Running step {i}/{len(steps)} (--yes)")
+            answer = "y"
+        else:
+            answer = confirm(f"Run step {i}/{len(steps)}? [y]es / [n]o skip / [q]uit: ")
         if answer == "q":
             print("Stopped.")
             break
@@ -109,7 +120,7 @@ def main() -> None:
         except TargetWindowError as exc:
             print(f"\nstep {i} did not start: {exc}")
             outcomes.append((step["goal"], f"not started: {exc}"))
-            if not continue_after(i, len(steps)):
+            if not continue_after(i, len(steps), assume_yes=args.yes):
                 break
             continue
         except Exception as exc:  # noqa: BLE001 -- report any mid-run failure, then let the user decide
@@ -117,7 +128,7 @@ def main() -> None:
             # would be wrong: say where it stopped and why.
             print(f"\nstep {i} stopped during the run: {type(exc).__name__}: {exc}")
             outcomes.append((step["goal"], f"stopped: {type(exc).__name__}: {exc}"))
-            if not continue_after(i, len(steps)):
+            if not continue_after(i, len(steps), assume_yes=args.yes):
                 break
             continue
 
@@ -126,7 +137,7 @@ def main() -> None:
             print("reason:", result.reason)
         print()
         outcomes.append((step["goal"], result.status.value))
-        if result.status != TerminalKind.SUBTASK_COMPLETE and not continue_after(i, len(steps)):
+        if result.status != TerminalKind.SUBTASK_COMPLETE and not continue_after(i, len(steps), assume_yes=args.yes):
             break
 
     print("\n=== Plan summary ===")

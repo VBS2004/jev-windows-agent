@@ -186,11 +186,18 @@ def run_one(
 
     def on_event(event: StepEvent, scope: WindowScope) -> None:
         nonlocal live
+        row = event_row(event, scope)
+        if not console.is_terminal:
+            # Redirected to a file or a pipe: a Live display can't repaint in place,
+            # so it would append the whole table again on every step. One line each.
+            status.stop()
+            if row is not None:
+                console.print(f"step {row[0]}: {row[1]} {row[2]}  confidence={row[3].plain}")
+            return
         if live is None:
             status.stop()
             live = Live(table, console=console, refresh_per_second=8, transient=False)
             live.start()
-        row = event_row(event, scope)
         if row is not None:
             table.add_row(*row)
         live.refresh()
@@ -281,7 +288,10 @@ def plan_table(steps: list[dict]) -> Table:
     return table
 
 
-def confirm_step(console: Console, i: int, total: int) -> str:
+def confirm_step(console: Console, i: int, total: int, *, assume_yes: bool = False) -> str:
+    if assume_yes:
+        console.print(f"[jev.dim]Running step {i}/{total} (--yes)[/]")
+        return "y"
     while True:
         answer = console.input(f"[jev.accent]Run step {i}/{total}?[/] [bold]\\[y][/]es / [bold]\\[n][/]o skip / "
                                 f"[bold]\\[q][/]uit: ").strip().lower()
@@ -290,8 +300,13 @@ def confirm_step(console: Console, i: int, total: int) -> str:
         console.print("[jev.dim]Please answer y, n, or q.[/]")
 
 
-def continue_after(console: Console, step: int, total: int) -> bool:
+def continue_after(console: Console, step: int, total: int, *, assume_yes: bool = False) -> bool:
     if step >= total:
+        return False
+    if assume_yes:
+        # --yes approves the plan, it does not ignore a step that failed: carrying on
+        # from a step that did not do what it claimed is how a run compounds a mistake.
+        console.print("[jev.blocked]Stopping: a step did not complete (--yes does not skip past that).[/]")
         return False
     answer = console.input(
         f"[jev.blocked]Step {step} did not complete.[/] Continue to step {step + 1}/{total} anyway? [y/N]: "
@@ -321,7 +336,7 @@ def cmd_plan(args: argparse.Namespace, console: Console) -> int:
 
     outcomes: list[tuple[str, str]] = []
     for i, step in enumerate(steps, 1):
-        answer = confirm_step(console, i, len(steps))
+        answer = confirm_step(console, i, len(steps), assume_yes=args.yes)
         if answer == "q":
             console.print("[jev.dim]Stopped.[/]")
             break
@@ -341,18 +356,20 @@ def cmd_plan(args: argparse.Namespace, console: Console) -> int:
         except TargetWindowError as exc:
             console.print(f"[jev.error]Step {i} did not start:[/] {exc}")
             outcomes.append((step["goal"], f"not started: {exc}"))
-            if not continue_after(console, i, len(steps)):
+            if not continue_after(console, i, len(steps), assume_yes=args.yes):
                 break
             continue
         except Exception as exc:  # noqa: BLE001 -- report any mid-run failure, then let the user decide
             console.print(f"[jev.error]Step {i} stopped during the run:[/] {type(exc).__name__}: {exc}")
             outcomes.append((step["goal"], f"stopped: {type(exc).__name__}: {exc}"))
-            if not continue_after(console, i, len(steps)):
+            if not continue_after(console, i, len(steps), assume_yes=args.yes):
                 break
             continue
 
         outcomes.append((step["goal"], result.status.value))
-        if result.status != TerminalKind.SUBTASK_COMPLETE and not continue_after(console, i, len(steps)):
+        if result.status != TerminalKind.SUBTASK_COMPLETE and not continue_after(
+            console, i, len(steps), assume_yes=args.yes
+        ):
             break
 
     console.print("\n[bold]Plan summary[/]")
@@ -387,6 +404,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--max-actions", type=int, default=15, help="per-step JEV action budget")
     plan_parser.add_argument("--confidence-gate", action="store_true",
                              help="hand a step back to you when JEV is less sure than SUGGESTED_CONFIDENCE_THRESHOLDS")
+    plan_parser.add_argument("-y", "--yes", action="store_true",
+                             help="approve every step up front and run the whole plan without stopping "
+                                  "(a step that does not complete still stops the run)")
     plan_parser.set_defaults(func=cmd_plan)
 
     return parser

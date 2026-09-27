@@ -45,9 +45,18 @@ Rules:
   becomes several steps, in the order they must run.
 - "process" identifies a running app by executable name (e.g. "notepad", "explorer").
   "window" is a substring of the window title (e.g. "Settings"). Give at least one;
-  give both if you know both. "launch" is a command/URI to start or open the app
-  first (e.g. "notepad.exe", "ms-settings:", "explorer.exe C:\\path") -- null if it's
-  probably already open and you're targeting it by process/window alone.
+  give both if you know both. "launch" starts the app first -- null if it's probably
+  already open and you're targeting it by process/window alone.
+- To open an app, put its ordinary display name in "launch": "Apple Music",
+  "Spotify", "Calculator". Any installed app, Store or desktop, is looked up in the
+  Start menu and started by that name, so you never need its install path or its
+  package id, and you must not guess one. A command, path, or URI ("notepad.exe",
+  "ms-settings:", "explorer.exe C:\\path") is also accepted and used as written.
+  There is no need to drive the Start menu or a search box to open an app, and no
+  keystroke can do it: a run is confined to one window, and the Start menu is a
+  different one.
+- Do not refuse a request just because you don't know how an app is installed or
+  launched. Name the app in "launch" and target it with "window" or "process".
 - "goal" is what a downstream execution model should accomplish in that one window.
   It does not click for you -- describe the outcome, not individual clicks.
 - "verify" is a list of ways to observe success from on-screen state. Never invent a

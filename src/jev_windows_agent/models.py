@@ -316,6 +316,31 @@ DEFAULT_HOTKEYS: tuple[str, ...] = (
     "MOD+F",
 )
 
+# Offered in addition to the defaults above when the snapshot came from the Windows
+# backend, keyed by DesktopSnapshot.context["backend"]. Media keys are global -- they
+# reach whichever app owns playback -- so a music app can be controlled without being
+# the window in front.
+#
+# Deliberately absent: WIN, WIN+R, WIN+S and friends. They open the Start menu or a
+# system surface, which is a *different window*; a run scoped to one window (see the
+# examples' WindowScope) would immediately go blind and stall. WIN is in the shared
+# vocabulary, so a caller who wants it can still declare it in Subtask.shortcuts --
+# the right call for an unscoped run, not a default for a scoped one.
+WINDOWS_PRESS_KEYS: tuple[str, ...] = (
+    "MEDIA_PLAY_PAUSE",
+    "MEDIA_NEXT",
+    "MEDIA_PREV",
+    "F5",
+)
+
+WINDOWS_HOTKEYS: tuple[str, ...] = (
+    "ALT+ARROW_LEFT",
+    "ALT+ARROW_RIGHT",
+)
+
+PLATFORM_PRESS_KEYS: Mapping[str, tuple[str, ...]] = {"windows_uia": WINDOWS_PRESS_KEYS}
+PLATFORM_HOTKEYS: Mapping[str, tuple[str, ...]] = {"windows_uia": WINDOWS_HOTKEYS}
+
 SCROLL_DIRECTIONS: tuple[str, ...] = ("UP", "DOWN", "LEFT", "RIGHT")
 
 

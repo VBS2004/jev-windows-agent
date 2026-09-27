@@ -16,8 +16,8 @@ from jev_windows_agent import (
 )
 from jev_windows_agent.backends import StateMachineBackend, macos_ax
 from jev_windows_agent.errors import InvalidDecision, UnsupportedDesktopAction
-from jev_windows_agent.keyboard import KEY_NAMES
-from jev_windows_agent.models import DEFAULT_HOTKEYS
+from jev_windows_agent.keyboard import KEY_NAMES, MODIFIERS, PORTABLE_KEY_NAMES, WINDOWS_ONLY_KEYS
+from jev_windows_agent.models import DEFAULT_HOTKEYS, DEFAULT_PRESS_KEYS, WINDOWS_HOTKEYS, WINDOWS_PRESS_KEYS
 from jev_windows_agent.policies import TypeSafeJevPolicy
 from jev_windows_agent.validation import materialize_action
 
@@ -134,8 +134,20 @@ def test_jev_cannot_select_a_shortcut_outside_the_offered_choices() -> None:
             policy.decide(subtask=Subtask(goal="Save", verification=("Saved",)), snapshot=snapshot(), history=[])
 
 
-def test_macos_can_encode_every_advertised_shortcut_key() -> None:
-    assert KEY_NAMES <= macos_ax._KEYCODES.keys()
+def test_macos_can_encode_every_portable_shortcut_key() -> None:
+    # Windows-only names (WIN, the media keys) are excluded by construction: macOS
+    # rejects them at execution rather than pressing something else.
+    assert PORTABLE_KEY_NAMES <= macos_ax._KEYCODES.keys()
+    assert not (PORTABLE_KEY_NAMES & WINDOWS_ONLY_KEYS)
+
+
+def test_windows_can_encode_every_advertised_shortcut_key() -> None:
+    # The Windows backend is the superset: it must encode the portable names *and*
+    # the Windows-only ones it is the reason for.
+    from jev_windows_agent.backends import windows_uia
+
+    assert KEY_NAMES <= windows_uia._VK_CODES.keys()
+    assert MODIFIERS <= windows_uia._MODIFIER_VKS.keys()
 
 
 @pytest.mark.parametrize(("chord", "keycode", "flags"), [
@@ -179,3 +191,49 @@ def test_invalid_chord_never_posts_a_keyboard_event(monkeypatch) -> None:
     monkeypatch.setattr(macos_ax, "_quartz", lambda: pytest.fail("Invalid chord reached the OS"))
     with pytest.raises(UnsupportedDesktopAction):
         macos_ax._press_hotkey("MOD+S,MOD+W")
+
+
+def windows_snapshot() -> DesktopSnapshot:
+    return DesktopSnapshot(application="Apple Music", window="Apple Music", revision="0",
+                           elements=(), context={"backend": "windows_uia"})
+
+
+def test_a_windows_run_is_offered_the_platform_keys() -> None:
+    # Live report: JEV had only Ctrl chords to guess with on Windows, because every
+    # offered key came from the shared cross-platform defaults.
+    with httpx.Client() as client:
+        policy = TypeSafeJevPolicy(api_key="test", client=client)
+        task = Subtask(goal="Play the liked songs", verification=("Playback is running",))
+        _, choices, _ = policy._build_questions(task, windows_snapshot())
+
+    keys = choices["PRESS_KEY_value"]
+    assert {*WINDOWS_PRESS_KEYS} <= keys.keys()
+    assert {*DEFAULT_PRESS_KEYS} <= keys.keys()
+    # Media keys carry a description, since their name alone doesn't say they are global.
+    assert "global" in keys["MEDIA_PLAY_PAUSE"].lower()
+    assert {*WINDOWS_HOTKEYS} <= choices["HOTKEY_value"].keys()
+
+
+def test_a_macos_run_is_not_offered_windows_keys() -> None:
+    with httpx.Client() as client:
+        policy = TypeSafeJevPolicy(api_key="test", client=client)
+        task = Subtask(goal="Play the liked songs", verification=("Playback is running",))
+        mac = DesktopSnapshot(application="Music", window="Music", revision="0", elements=(),
+                              context={"backend": "macos_hybrid"})
+        _, choices, _ = policy._build_questions(task, mac)
+
+    assert not ({*WINDOWS_PRESS_KEYS} & choices["PRESS_KEY_value"].keys())
+    assert not ({*WINDOWS_HOTKEYS} & choices["HOTKEY_value"].keys())
+    assert {*DEFAULT_PRESS_KEYS} <= choices["PRESS_KEY_value"].keys()
+
+
+def test_the_windows_key_is_available_to_declare_but_not_offered_by_default() -> None:
+    # WIN opens the Start menu -- a different window -- so a run scoped to one window
+    # would go blind. It stays declarable for callers who genuinely want it.
+    assert "WIN+R" not in {*DEFAULT_HOTKEYS, *WINDOWS_HOTKEYS}
+    task = subtask_from_dict({"goal": "Open Run", "verification": ["The Run dialog is open"],
+                              "shortcuts": {"WIN+R": "Open the Run dialog"}})
+    with httpx.Client() as client:
+        policy = TypeSafeJevPolicy(api_key="test", client=client)
+        _, choices, _ = policy._build_questions(task, windows_snapshot())
+    assert choices["HOTKEY_value"]["WIN+R"] == "Open the Run dialog"

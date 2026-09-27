@@ -220,12 +220,84 @@ def test_plan_requires_request_and_defaults_the_model() -> None:
     assert args.max_actions == 15
 
 
+def test_plan_yes_flag_defaults_off_and_has_a_short_form() -> None:
+    parser = cli.build_parser()
+    assert parser.parse_args(["plan", "--request", "r"]).yes is False
+    assert parser.parse_args(["plan", "--request", "r", "--yes"]).yes is True
+    assert parser.parse_args(["plan", "--request", "r", "-y"]).yes is True
+
+
+def test_yes_approves_a_step_without_prompting() -> None:
+    console, buf = plain_console()
+    # console.input would raise on a StringIO-backed console with no stdin to read.
+    assert cli.confirm_step(console, 1, 3, assume_yes=True) == "y"
+    assert "(--yes)" in buf.getvalue()
+
+
+def test_yes_still_stops_on_a_step_that_did_not_complete() -> None:
+    # Approving the plan up front is not the same as ignoring a failed step: carrying
+    # on from one that didn't do what it claimed is how a run compounds a mistake.
+    console, buf = plain_console()
+    assert cli.continue_after(console, 1, 3, assume_yes=True) is False
+    assert "did not complete" in buf.getvalue()
+
+
 def test_no_command_is_not_an_error() -> None:
     args = cli.build_parser().parse_args([])
     assert args.command is None
 
 
 # -- error paths: no key, no target, never touch the desktop or network ------------------
+
+
+def drive_events(monkeypatch: pytest.MonkeyPatch, events: list[StepEvent]) -> ExecutionResult:
+    """Replace the real run with one that just feeds the given events to the callbacks."""
+    result = ExecutionResult(status=TerminalKind.SUBTASK_COMPLETE, subtask=Subtask(goal="g", verification=("v",)),
+                             final_snapshot=snapshot(), history=())
+
+    def fake_run(policy, *, subtask, process, window, launch, confidence_gate, on_phase, on_event):
+        on_phase("Finding notepad...")
+        scope = WindowScope(inner=None, hwnd=1)
+        for event in events:
+            on_event(event, scope)
+        return result
+
+    monkeypatch.setattr(cli, "run_windowed_subtask", fake_run)
+    return result
+
+
+def test_redirected_output_prints_one_line_per_step_instead_of_repainting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Live table can't repaint in place when stdout is a file or a pipe: every
+    # refresh would append the whole table again.
+    drive_events(monkeypatch, [click_event(target_id="e1", confidence=0.9, step=1, target_name="Save"),
+                               click_event(target_id="e2", confidence=0.8, step=2, target_name="Close")])
+    buf = io.StringIO()
+    console = Console(file=buf, theme=cli.THEME, no_color=True, width=200, force_terminal=False)
+    assert not console.is_terminal
+
+    cli.run_one(console, None, subtask=Subtask(goal="g", verification=("v",)),
+                process="notepad", window=None, launch=None, confidence_gate=False)
+
+    out = buf.getvalue()
+    assert out.count("step 1:") == 1 and out.count("step 2:") == 1
+    assert "Save" in out and "Close" in out
+    assert "─┬─" not in out  # no table borders, so nothing to repaint
+
+
+def test_a_real_terminal_gets_the_live_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    drive_events(monkeypatch, [click_event(target_id="e1", confidence=0.9, step=1, target_name="Save")])
+    buf = io.StringIO()
+    console = Console(file=buf, theme=cli.THEME, no_color=True, width=200, force_terminal=True)
+    assert console.is_terminal
+
+    cli.run_one(console, None, subtask=Subtask(goal="g", verification=("v",)),
+                process="notepad", window=None, launch=None, confidence_gate=False)
+
+    out = buf.getvalue()
+    assert "confidence" in out and "Save" in out  # the table header and a row
+    assert "SUBTASK_COMPLETE" in out  # the result panel
 
 
 def test_cmd_run_without_a_target_returns_2_without_touching_anything(monkeypatch: pytest.MonkeyPatch) -> None:

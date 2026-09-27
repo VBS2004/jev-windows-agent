@@ -122,7 +122,7 @@ result = execute_payload(executor, {
 })
 ```
 
-Chords use uppercase key names and one or more `MOD`, `CTRL`, `ALT`, or `SHIFT` modifiers, for example `MOD+S`, `CTRL+ALT+7`, or `SHIFT+F12`. `MOD` means Command on macOS and Ctrl on Windows. Supported keys include A-Z, 0-9, F1-F20, navigation keys, and named punctuation keys; see [the keyboard vocabulary](src/jev_windows_agent/keyboard.py). The macOS backend uses US/ANSI physical key positions. Each shortcut is one chord, not a sequence of actions.
+Chords use uppercase key names and one or more `MOD`, `CTRL`, `ALT`, `SHIFT`, or `WIN` modifiers, for example `MOD+S`, `CTRL+ALT+7`, or `SHIFT+F12`. `MOD` means Command on macOS and Ctrl on Windows; `WIN` is the Windows key (Windows only — macOS rejects it rather than pressing something else). Supported keys include A-Z, 0-9, F1-F20, navigation keys, and named punctuation keys; see [the keyboard vocabulary](src/jev_windows_agent/keyboard.py). The macOS backend uses US/ANSI physical key positions. Each shortcut is one chord, not a sequence of actions.
 
 Malformed declarations fail when the subtask is created. JEV can choose only offered chords; runtime validation also rejects hotkeys outside the defaults and the current subtask's declarations, including decisions from custom policies.
 
@@ -239,9 +239,10 @@ jev run --process notepad --launch notepad.exe `
     --input "line=Hello from jev"
 
 jev plan --request "Turn on dark mode, then open Notepad and write today's date"
+jev plan --yes --request "Open Apple Music and play my liked songs"   # approve every step up front
 ```
 
-`jev run` takes the same flags as `windows_task.py` below; `jev plan` takes the same flags as `planner.py`. Both live-render JEV's decisions (action, target, confidence, top candidates) as they stream in, and `jev plan` shows the proposed multi-step plan as a table before asking you to confirm each step. Also runnable without installing, as `python -m jev_windows_agent.cli`.
+`jev run` takes the same flags as `windows_task.py` below; `jev plan` takes the same flags as `planner.py`. `--yes` (`-y`) approves the whole plan up front and runs it in one go — it still stops if a step doesn't complete, rather than compounding a mistake. Both live-render JEV's decisions (action, target, confidence, top candidates) as they stream in, and `jev plan` shows the proposed multi-step plan as a table before asking you to confirm each step. Also runnable without installing, as `python -m jev_windows_agent.cli`.
 
 ```powershell
 python examples/windows_uia_probe.py --process notepad   # Inspect an app's UIA tree
@@ -274,6 +275,8 @@ The smoke test and JEV example work on a file they create in a temp directory. W
 
 - Foreground window only, as on macOS. The backend acts on whatever is in front, so avoid using the machine during a run, or scope the backend as `test_notepad.py` does.
 - Picking the window: with `--launch`, a task runs in the window that launch opened (or the window a single-instance app such as Settings brings forward), never in an older window that happens to match. Without `--launch`, exactly one window must match or the matching one must already be in front; with several candidates the run stops rather than guessing, since typing replaces the target's text.
+- Opening an app: put its ordinary name in `--launch` ("Apple Music", "Spotify", "Calculator"). Any installed app, Store or desktop, is looked up in the Start menu by name, so you don't need its path or package id; a command, path, or URI (`notepad.exe`, `ms-settings:`) is used as written.
+- Windows keys JEV can use: the media keys (`MEDIA_PLAY_PAUSE`, `MEDIA_NEXT`, `MEDIA_PREV`) are offered by default on Windows — they're global, so they reach a music app that isn't the window in front. `WIN`, `WIN+R` and friends are in the vocabulary but *not* offered by default: they open the Start menu, which is a different window, and a run scoped to one window would go blind. Declare them in a subtask's `shortcuts` if you actually want them.
 - Launching an app can be slow. Windows' app-activation broker was observed taking 40s+ to bring Notepad forward while several Notepad windows were already open; `--launch` is bounded (`resolve_window`'s `timeout_s`, 30s by default) and fails with a clear message rather than hanging past it.
 - A non-elevated process cannot automate an elevated (administrator) window; `observe()` raises `PermissionError`.
 - Hotkeys use US-layout virtual keys. Typed text is layout-independent.

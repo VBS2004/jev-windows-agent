@@ -413,10 +413,25 @@ def test_mod_is_ctrl_and_mod_ctrl_collapses() -> None:
     assert w._chord_events("MOD+CTRL+A") == [(w._VK_CONTROL, False), (0x41, False), (0x41, True), (w._VK_CONTROL, True)]
 
 
-@pytest.mark.parametrize("chord", ["S", "MOD+", "MOD+s", "MOD+MOD+S", "WIN+S"])
+@pytest.mark.parametrize("chord", ["S", "MOD+", "MOD+s", "MOD+MOD+S", "CMD+S", "HYPER+S"])
 def test_invalid_chords_are_rejected(chord: str) -> None:
     with pytest.raises(UnsupportedDesktopAction):
         w._chord_events(chord)
+
+
+def test_the_windows_key_is_usable_as_a_modifier_and_on_its_own() -> None:
+    # Was missing entirely: MOD maps to Ctrl on Windows, so without this there was no
+    # way to press Win at all, and JEV had only Ctrl chords to guess with.
+    lwin = w._VK_LWIN
+    assert w._chord_events("WIN+R") == [(lwin, False), (0x52, False), (0x52, True), (lwin, True)]
+    assert w._VK_CODES["WIN"] == lwin
+    assert lwin in w._EXTENDED_VKS  # the Windows key's scan code is an extended one
+
+
+def test_media_keys_are_pressable_and_extended() -> None:
+    for name, vk in (("MEDIA_PLAY_PAUSE", 0xB3), ("MEDIA_NEXT", 0xB0), ("MEDIA_PREV", 0xB1)):
+        assert w._VK_CODES[name] == vk
+        assert vk in w._EXTENDED_VKS
 
 
 def test_text_units_normalize_newlines_and_split_surrogates() -> None:
@@ -530,7 +545,8 @@ def test_a_failed_launch_is_a_clear_error_not_a_traceback(monkeypatch: pytest.Mo
     import subprocess
 
     def fail(args, **kwargs):
-        raise subprocess.CalledProcessError(1, args, output="", stderr="The system cannot find the file")
+        kwargs["stdout"].write(b"The system cannot find the file")
+        return subprocess.CompletedProcess(args, 1)
 
     monkeypatch.setattr(subprocess, "run", fail)
     monkeypatch.setattr(w, "find_windows", lambda **kw: [])
@@ -539,15 +555,98 @@ def test_a_failed_launch_is_a_clear_error_not_a_traceback(monkeypatch: pytest.Mo
         w.resolve_window(process_name="spotify", launch="Spotify.exe:")
 
 
+def test_the_launch_never_captures_through_pipes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The actual cause of "stuck at Finding notepad...".
+
+    `cmd /c start` exits at once, but the app it launched inherits the pipe handles,
+    so capture_output=True waits for EOF -- which arrives only when that app exits.
+    Launching Notepad blocked until Notepad was closed. `timeout=` did not rescue it
+    either: after killing cmd.exe, subprocess.run drains the same still-held pipes
+    and blocks again, which is why the first fix (adding a timeout) changed nothing.
+    """
+    import subprocess
+
+    seen: dict = {}
+
+    def record(args, **kwargs):
+        seen.update(kwargs)
+        kwargs["stdout"].write(b"")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, "run", record)
+    monkeypatch.setattr(w, "find_windows", lambda **kw: [7])
+    monkeypatch.setattr(w, "foreground_window", lambda: 7)
+    monkeypatch.setattr(w, "_pick_launched_window", lambda *a: 7)
+    w.resolve_window(process_name="notepad", launch="notepad.exe", timeout_s=5)
+
+    assert not seen.get("capture_output"), "capture_output re-creates the hang"
+    assert seen.get("stdout") not in (subprocess.PIPE, None), "stdout must not be a pipe"
+    assert seen.get("stderr") in (subprocess.STDOUT, subprocess.DEVNULL), "stderr must not be a pipe"
+    assert seen.get("timeout") is not None, "the launch must still be bounded"
+
+
+# -- resolving what to launch -------------------------------------------------------
+
+CATALOGUE = {
+    "Apple Music": "AppleInc.AppleMusicWin_nzyj5cx40ttqa!App",
+    "Spotify": r"C:\Users\someone\AppData\Roaming\Spotify\Spotify.exe",
+    "Notepad": "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App",
+    "Notepad++": r"{6D809377}\Notepad++\notepad++.exe",
+}
+
+
+@pytest.mark.parametrize("launch", ["Apple Music", "Calculator", "Xbox Game Bar"])
+def test_a_plain_app_name_is_recognised_as_one(launch: str) -> None:
+    assert w.looks_like_app_name(launch)
+
+
+@pytest.mark.parametrize("launch", ["notepad.exe", "ms-settings:", r"C:\dir\App.exe",
+                                    r"explorer.exe C:\dir", "shell:AppsFolder\\X", ""])
+def test_commands_paths_and_uris_are_not_app_names(launch: str) -> None:
+    assert not w.looks_like_app_name(launch)
+    if launch:
+        assert w.resolve_launch_target(launch, apps=CATALOGUE) == launch
+
+
+def test_a_store_app_resolves_to_its_appsfolder_id() -> None:
+    # Live: the planner could not open Apple Music because a Store app only starts
+    # through its AppUserModelID, which no model should be guessing.
+    assert w.resolve_launch_target("Apple Music", apps=CATALOGUE) == (
+        "shell:AppsFolder\\AppleInc.AppleMusicWin_nzyj5cx40ttqa!App"
+    )
+
+
+def test_a_desktop_app_resolves_to_its_path_without_the_shell_indirection() -> None:
+    assert w.resolve_launch_target("Spotify", apps=CATALOGUE) == CATALOGUE["Spotify"]
+
+
+def test_app_names_match_case_insensitively_and_by_unique_prefix() -> None:
+    assert w.resolve_launch_target("apple music", apps=CATALOGUE).endswith("!App")
+    assert w.resolve_launch_target("Apple", apps=CATALOGUE).endswith("AppleMusicWin_nzyj5cx40ttqa!App")
+
+
+def test_an_exact_name_wins_over_a_longer_one_that_starts_with_it() -> None:
+    # "Notepad" must not be ambiguous just because "Notepad++" also starts with it.
+    assert w.resolve_launch_target("Notepad", apps=CATALOGUE) == (
+        "shell:AppsFolder\\Microsoft.WindowsNotepad_8wekyb3d8bbwe!App"
+    )
+
+
+def test_an_ambiguous_name_is_refused_with_the_candidates() -> None:
+    catalogue = {"Sound Recorder": "a!App", "Sound Settings": "b!App"}
+    with pytest.raises(LookupError, match="matches several installed apps"):
+        w.resolve_launch_target("Sound", apps=catalogue)
+
+
+def test_an_unknown_app_name_says_so() -> None:
+    with pytest.raises(LookupError, match="no installed app is named 'Nope'"):
+        w.resolve_launch_target("Nope", apps=CATALOGUE)
+
+
 def test_a_launch_that_never_returns_times_out_instead_of_hanging(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Live: "cmd /c start" launching Notepad while several Notepad windows were
-    # already open blocked for 40s+ -- Windows' app-activation broker negotiating
-    # with the running instance -- well past resolve_window's own polling deadline,
-    # which never even started. subprocess.run had no timeout of its own.
     import subprocess
 
     def hang(args, **kwargs):
-        assert kwargs.get("timeout") is not None, "the launch subprocess must be bounded"
         raise subprocess.TimeoutExpired(args, kwargs["timeout"])
 
     monkeypatch.setattr(subprocess, "run", hang)

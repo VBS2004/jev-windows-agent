@@ -15,6 +15,8 @@ from ..errors import JevProviderError
 from ..models import (
     DEFAULT_HOTKEYS,
     DEFAULT_PRESS_KEYS,
+    PLATFORM_HOTKEYS,
+    PLATFORM_PRESS_KEYS,
     SCROLL_DIRECTIONS,
     ActionKind,
     ActionRecord,
@@ -434,14 +436,20 @@ class TypeSafeJevPolicy:
                     },
                 }
 
-        candidate_maps["PRESS_KEY_value"] = {key: key for key in DEFAULT_PRESS_KEYS}
+        # The snapshot names the backend that produced it, which is where the platform's
+        # own keys come from: a Windows run gets media keys, a macOS run does not.
+        backend = str(snapshot.context.get("backend", ""))
+        press_keys = (*DEFAULT_PRESS_KEYS, *PLATFORM_PRESS_KEYS.get(backend, ()))
+        hotkeys = (*DEFAULT_HOTKEYS, *PLATFORM_HOTKEYS.get(backend, ()))
+
+        candidate_maps["PRESS_KEY_value"] = {key: _key_description(key) for key in press_keys}
         questions["press_key_value"] = {
             "type": "choice",
             "criteria": candidate_maps["PRESS_KEY_value"],
             "instructions": {"subtask": subtask.compact(), "rules": "Choose the single key to press if PRESS_KEY is selected."},
         }
 
-        candidate_maps["HOTKEY_value"] = {key: key for key in DEFAULT_HOTKEYS}
+        candidate_maps["HOTKEY_value"] = {key: key for key in hotkeys}
         candidate_maps["HOTKEY_value"].update(subtask.shortcuts)
         questions["hotkey_value"] = {
             "type": "choice",
@@ -552,6 +560,20 @@ def _validate_choice(answer: Mapping[str, Any], ids: set[str]) -> Mapping[str, A
     if not valid:
         raise ValueError("Invalid JEV choice response; no action executed")
     return answer
+
+
+_KEY_DESCRIPTIONS = {
+    "MEDIA_PLAY_PAUSE": "Media play/pause. Global: it reaches whichever app owns playback, "
+                        "even when that app is not the window in front.",
+    "MEDIA_NEXT": "Media next track. Global, as above.",
+    "MEDIA_PREV": "Media previous track. Global, as above.",
+    "F5": "Refresh the current view.",
+}
+
+
+def _key_description(key: str) -> str:
+    """What a key does, for keys whose effect isn't obvious from the name alone."""
+    return _KEY_DESCRIPTIONS.get(key, key)
 
 
 def _operation_description(kind: ActionKind) -> str:
